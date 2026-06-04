@@ -21,14 +21,22 @@ stages:
           vmImage: $(vmImageName)
         steps:
           # 1. Build & Push Frontend (as a Docker container)
-          - task: Docker@2
+          - task: AzureCLI@2
             displayName: "Build & Push Frontend"
             inputs:
-              command: buildAndPush
-              repository: 'wacrm'
-              dockerfile: '$(Build.SourcesDirectory)/Dockerfile'
-              containerRegistry: $(dockerRegistryServiceConnection)
-              tags: |
-                $(tag)
-                latest
-              arguments: '--build-arg NEXT_PUBLIC_SUPABASE_URL=$(NEXT_PUBLIC_SUPABASE_URL) --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY=$(NEXT_PUBLIC_SUPABASE_ANON_KEY) --build-arg NEXT_PUBLIC_API_BASE_URL=$(NEXT_PUBLIC_API_BASE_URL) --build-arg NEXT_PUBLIC_GOOGLE_AI_API_KEY=$(NEXT_PUBLIC_GOOGLE_AI_API_KEY)'
+              azureSubscription: $(dockerRegistryServiceConnection)
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                az acr login --name bitlanceaiapp
+                docker build \
+                  --build-arg NEXT_PUBLIC_SUPABASE_URL="$(NEXT_PUBLIC_SUPABASE_URL)" \
+                  --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY="$(NEXT_PUBLIC_SUPABASE_ANON_KEY)" \
+                  --build-arg NEXT_PUBLIC_API_BASE_URL="$(NEXT_PUBLIC_API_BASE_URL)" \
+                  --build-arg NEXT_PUBLIC_GOOGLE_AI_API_KEY="$(NEXT_PUBLIC_GOOGLE_AI_API_KEY)" \
+                  -t $(containerRegistry)/wacrm:$(tag) \
+                  -t $(containerRegistry)/wacrm:latest \
+                  -f $(Build.SourcesDirectory)/Dockerfile \
+                  $(Build.SourcesDirectory)
+                docker push $(containerRegistry)/wacrm:$(tag)
+                docker push $(containerRegistry)/wacrm:latest

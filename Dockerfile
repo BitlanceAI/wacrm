@@ -17,10 +17,11 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
 # Accept build arguments passed from Azure DevOps Pipeline
-ARG NEXT_PUBLIC_SUPABASE_URL
-ARG NEXT_PUBLIC_SUPABASE_ANON_KEY
-ARG NEXT_PUBLIC_API_BASE_URL
-ARG NEXT_PUBLIC_GOOGLE_AI_API_KEY
+# Default placeholders ensure the build doesn't fail if args are not passed
+ARG NEXT_PUBLIC_SUPABASE_URL=https://placeholder.supabase.co
+ARG NEXT_PUBLIC_SUPABASE_ANON_KEY=placeholder-anon-key
+ARG NEXT_PUBLIC_API_BASE_URL=https://placeholder.api.com
+ARG NEXT_PUBLIC_GOOGLE_AI_API_KEY=placeholder-google-ai-key
 
 # Set them as environment variables during the build
 ENV NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL
