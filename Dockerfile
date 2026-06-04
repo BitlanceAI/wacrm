@@ -20,12 +20,6 @@ ENV NEXT_PUBLIC_GOOGLE_AI_API_KEY=$NEXT_PUBLIC_GOOGLE_AI_API_KEY
 
 RUN npm run build
 
-# Write the build args into .env.production so the runtime server can load them
-RUN echo "NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL" > .env.production && \
-    echo "NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY" >> .env.production && \
-    echo "NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL" >> .env.production && \
-    echo "NEXT_PUBLIC_GOOGLE_AI_API_KEY=$NEXT_PUBLIC_GOOGLE_AI_API_KEY" >> .env.production
-
 # ─── Production Stage ──────────────────────────────────────────────────────────
 FROM node:22-alpine AS runner
 WORKDIR /app
@@ -36,7 +30,7 @@ COPY --from=builder /app/package*.json ./
 COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/.env.production ./.env.production
+
 
 EXPOSE 8080
 
