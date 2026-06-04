@@ -45,4 +45,7 @@ EXPOSE 3000
 #   docker run -e SUPABASE_SERVICE_ROLE_KEY=<secret> ...
 # or via a secrets manager / orchestrator (Azure Key Vault, Kubernetes Secret, etc.)
 # They are NEVER embedded in the image.
-CMD ["npm", "start"]
+ENV PORT=3000
+ENV HOSTNAME=0.0.0.0
+
+CMD ["node_modules/.bin/next", "start", "-H", "0.0.0.0", "-p", "3000"]
