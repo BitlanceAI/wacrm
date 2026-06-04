@@ -11,49 +11,49 @@ import { Header } from "@/components/layout/header";
 // client components can't export Next's metadata object.
 
 function DashboardShellInner({ children }: { children: React.ReactNode }) {
-  const { user, loading } = useAuth();
-  const router = useRouter();
+ const { user, loading } = useAuth();
+ const router = useRouter();
 
-  // Sidebar drawer state — only used on mobile. On lg+ the sidebar is
-  // always visible and this stays at `false` (ignored by the component).
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-  const closeSidebar = useCallback(() => setSidebarOpen(false), []);
+ // Sidebar drawer state — only used on mobile. On lg+ the sidebar is
+ // always visible and this stays at `false` (ignored by the component).
+ const [sidebarOpen, setSidebarOpen] = useState(false);
+ const closeSidebar = useCallback(() => setSidebarOpen(false), []);
 
-  useEffect(() => {
-    if (!loading && !user) {
-      router.push("/login");
-    }
-  }, [user, loading, router]);
+ useEffect(() => {
+ if (!loading && !user) {
+ router.push("/login");
+ }
+ }, [user, loading, router]);
 
-  if (loading) {
-    return (
-      <div className="flex h-screen items-center justify-center bg-slate-950">
-        <div className="flex flex-col items-center gap-3">
-          <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-          <p className="text-sm text-slate-400">Loading...</p>
-        </div>
-      </div>
-    );
-  }
+ if (loading) {
+ return (
+ <div className="flex h-screen items-center justify-center bg-background">
+ <div className="flex flex-col items-center gap-3">
+ <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+ <p className="text-sm text-muted-foreground">Loading...</p>
+ </div>
+ </div>
+ );
+ }
 
-  if (!user) return null;
+ if (!user) return null;
 
-  return (
-    <div className="flex h-screen overflow-hidden bg-slate-950">
-      <Sidebar open={sidebarOpen} onClose={closeSidebar} />
-      <div className="flex flex-1 flex-col overflow-hidden">
-        <Header onOpenSidebar={() => setSidebarOpen(true)} />
-        {/* Thinner horizontal padding on mobile so cards have room to breathe. */}
-        <main className="flex-1 overflow-y-auto p-4 sm:p-6">{children}</main>
-      </div>
-    </div>
-  );
+ return (
+ <div className="flex h-screen overflow-hidden bg-background">
+ <Sidebar open={sidebarOpen} onClose={closeSidebar} />
+ <div className="flex flex-1 flex-col overflow-hidden">
+ <Header onOpenSidebar={() => setSidebarOpen(true)} />
+ {/* Thinner horizontal padding on mobile so cards have room to breathe. */}
+ <main className="flex-1 overflow-y-auto p-4 sm:p-6">{children}</main>
+ </div>
+ </div>
+ );
 }
 
 export function DashboardShell({ children }: { children: React.ReactNode }) {
-  return (
-    <AuthProvider>
-      <DashboardShellInner>{children}</DashboardShellInner>
-    </AuthProvider>
-  );
+ return (
+ <AuthProvider>
+ <DashboardShellInner>{children}</DashboardShellInner>
+ </AuthProvider>
+ );
 }

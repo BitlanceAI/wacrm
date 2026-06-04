@@ -7,22 +7,22 @@ import { DashboardShell } from "./dashboard-shell";
 // this is belt-and-suspenders — but SEO-critical if a URL ever leaks
 // via a link shared externally.
 export const metadata: Metadata = {
-  robots: {
-    index: false,
-    follow: false,
-    nocache: true,
-    googleBot: {
-      index: false,
-      follow: false,
-      noimageindex: true,
-    },
-  },
+ robots: {
+ index: false,
+ follow: false,
+ nocache: true,
+ googleBot: {
+ index: false,
+ follow: false,
+ noimageindex: true,
+ },
+ },
 };
 
 export default function DashboardLayout({
-  children,
+ children,
 }: {
-  children: React.ReactNode;
+ children: React.ReactNode;
 }) {
-  return <DashboardShell>{children}</DashboardShell>;
+ return <DashboardShell>{children}</DashboardShell>;
 }

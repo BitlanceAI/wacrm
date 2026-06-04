@@ -23,24 +23,24 @@
 import { NextResponse } from 'next/server';
 
 export interface RateLimitOptions {
-  /** Max requests allowed in `windowMs`. */
-  limit: number;
-  /** Window size, milliseconds. */
-  windowMs: number;
+ /** Max requests allowed in `windowMs`. */
+ limit: number;
+ /** Window size, milliseconds. */
+ windowMs: number;
 }
 
 export interface RateLimitResult {
-  success: boolean;
-  /** Requests still allowed in the current window. */
-  remaining: number;
-  /** Unix ms when the bucket refills. */
-  reset: number;
-  limit: number;
+ success: boolean;
+ /** Requests still allowed in the current window. */
+ remaining: number;
+ /** Unix ms when the bucket refills. */
+ reset: number;
+ limit: number;
 }
 
 interface Entry {
-  count: number;
-  resetAt: number;
+ count: number;
+ resetAt: number;
 }
 
 const buckets = new Map<string, Entry>();
@@ -52,41 +52,41 @@ const LIGHT_SWEEP_EVERY = 1000;
 let callsSinceSweep = 0;
 
 function sweepExpired(now: number) {
-  for (const [k, v] of buckets) {
-    if (v.resetAt <= now) buckets.delete(k);
-  }
+ for (const [k, v] of buckets) {
+ if (v.resetAt <= now) buckets.delete(k);
+ }
 }
 
 export function checkRateLimit(
-  key: string,
-  { limit, windowMs }: RateLimitOptions,
+ key: string,
+ { limit, windowMs }: RateLimitOptions,
 ): RateLimitResult {
-  const now = Date.now();
+ const now = Date.now();
 
-  callsSinceSweep += 1;
-  if (callsSinceSweep >= LIGHT_SWEEP_EVERY) {
-    callsSinceSweep = 0;
-    sweepExpired(now);
-  }
+ callsSinceSweep += 1;
+ if (callsSinceSweep >= LIGHT_SWEEP_EVERY) {
+ callsSinceSweep = 0;
+ sweepExpired(now);
+ }
 
-  const entry = buckets.get(key);
+ const entry = buckets.get(key);
 
-  if (!entry || entry.resetAt <= now) {
-    buckets.set(key, { count: 1, resetAt: now + windowMs });
-    return { success: true, remaining: limit - 1, reset: now + windowMs, limit };
-  }
+ if (!entry || entry.resetAt <= now) {
+ buckets.set(key, { count: 1, resetAt: now + windowMs });
+ return { success: true, remaining: limit - 1, reset: now + windowMs, limit };
+ }
 
-  if (entry.count >= limit) {
-    return { success: false, remaining: 0, reset: entry.resetAt, limit };
-  }
+ if (entry.count >= limit) {
+ return { success: false, remaining: 0, reset: entry.resetAt, limit };
+ }
 
-  entry.count += 1;
-  return {
-    success: true,
-    remaining: limit - entry.count,
-    reset: entry.resetAt,
-    limit,
-  };
+ entry.count += 1;
+ return {
+ success: true,
+ remaining: limit - entry.count,
+ reset: entry.resetAt,
+ limit,
+ };
 }
 
 /**
@@ -94,42 +94,42 @@ export function checkRateLimit(
  * draft-ietf-httpapi-ratelimit-headers). Callers just `return` this.
  */
 export function rateLimitResponse(result: RateLimitResult): NextResponse {
-  const retryAfterSec = Math.max(1, Math.ceil((result.reset - Date.now()) / 1000));
-  return NextResponse.json(
-    {
-      error: 'Rate limit exceeded',
-      retry_after_seconds: retryAfterSec,
-    },
-    {
-      status: 429,
-      headers: {
-        'Retry-After': String(retryAfterSec),
-        'X-RateLimit-Limit': String(result.limit),
-        'X-RateLimit-Remaining': String(result.remaining),
-        'X-RateLimit-Reset': String(Math.ceil(result.reset / 1000)),
-      },
-    },
-  );
+ const retryAfterSec = Math.max(1, Math.ceil((result.reset - Date.now()) / 1000));
+ return NextResponse.json(
+ {
+ error: 'Rate limit exceeded',
+ retry_after_seconds: retryAfterSec,
+ },
+ {
+ status: 429,
+ headers: {
+ 'Retry-After': String(retryAfterSec),
+ 'X-RateLimit-Limit': String(result.limit),
+ 'X-RateLimit-Remaining': String(result.remaining),
+ 'X-RateLimit-Reset': String(Math.ceil(result.reset / 1000)),
+ },
+ },
+ );
 }
 
 /** Preconfigured budgets, tweak here not at call sites. */
 export const RATE_LIMITS = {
-  /** Individual message send. 60/min per user = one per second
-   *  sustained, comfortable for a live human typing. */
-  send: { limit: 60, windowMs: 60_000 },
-  /** Broadcast dispatch. 5/min per user — even a 1 000-recipient
-   *  broadcast is one call; this caps the rate at which a single user
-   *  can launch campaigns, not the messages inside one. */
-  broadcast: { limit: 5, windowMs: 60_000 },
-  /** Reaction add/swap/remove. More permissive than send — users
-   *  fidget with reactions and a single "swap" is actually two calls
-   *  (remove + add) under the hood. */
-  react: { limit: 120, windowMs: 60_000 },
+ /** Individual message send. 60/min per user = one per second
+ * sustained, comfortable for a live human typing. */
+ send: { limit: 60, windowMs: 60_000 },
+ /** Broadcast dispatch. 5/min per user — even a 1 000-recipient
+ * broadcast is one call; this caps the rate at which a single user
+ * can launch campaigns, not the messages inside one. */
+ broadcast: { limit: 5, windowMs: 60_000 },
+ /** Reaction add/swap/remove. More permissive than send — users
+ * fidget with reactions and a single "swap" is actually two calls
+ * (remove + add) under the hood. */
+ react: { limit: 120, windowMs: 60_000 },
 } as const;
 
 /** Test-only helper. Clears the in-memory state so unit tests don't
- *  leak buckets across files. Not wired up in production code. */
+ * leak buckets across files. Not wired up in production code. */
 export function __resetRateLimitForTests() {
-  buckets.clear();
-  callsSinceSweep = 0;
+ buckets.clear();
+ callsSinceSweep = 0;
 }
