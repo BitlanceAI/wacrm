@@ -38,14 +38,14 @@ COPY --from=builder /app/public ./public
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/.env.production ./.env.production
 
-EXPOSE 3000
+EXPOSE 8080
 
 # SUPABASE_SERVICE_ROLE_KEY, ENCRYPTION_KEY, META_APP_SECRET (and any other
 # server-only secrets) are injected at container runtime via:
 #   docker run -e SUPABASE_SERVICE_ROLE_KEY=<secret> ...
 # or via a secrets manager / orchestrator (Azure Key Vault, Kubernetes Secret, etc.)
 # They are NEVER embedded in the image.
-ENV PORT=3000
+ENV PORT=8080
 ENV HOSTNAME=0.0.0.0
 
-CMD ["node_modules/.bin/next", "start", "-H", "0.0.0.0", "-p", "3000"]
+CMD ["node_modules/.bin/next", "start", "-H", "0.0.0.0", "-p", "8080"]
