@@ -32,3 +32,40 @@ export async function deleteUser(userId: string) {
   revalidatePath("/admin");
   return { success: true };
 }
+export async function createUser(data: { email: string; full_name: string; password?: string }) {
+  await verifyAdmin();
+
+  const adminClient = getAdminClient();
+  
+  const { error } = await adminClient.auth.admin.createUser({
+    email: data.email,
+    password: data.password || "TempPassword123!",
+    email_confirm: true,
+    user_metadata: {
+      full_name: data.full_name,
+    },
+  });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  revalidatePath("/admin");
+  return { success: true };
+}
+
+export async function updateUserPassword(userId: string, newPassword?: string) {
+  await verifyAdmin();
+
+  const adminClient = getAdminClient();
+  
+  const { error } = await adminClient.auth.admin.updateUserById(userId, {
+    password: newPassword || "TempPassword123!",
+  });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return { success: true };
+}
