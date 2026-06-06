@@ -16,7 +16,7 @@ export interface AudienceConfig {
  type: 'all' | 'tags' | 'custom_field' | 'csv';
  tagIds?: string[];
  customField?: CustomFieldFilter;
- csvContacts?: { phone: string; name?: string }[];
+ csvContacts?: { phone: string; name?: string; vars?: Record<string, string> }[];
  /** Contacts carrying any of these tags are subtracted from the result. */
  excludeTagIds?: string[];
 }
@@ -77,36 +77,44 @@ type CustomValueIndex = Map<string, Map<string, string>>;
  * from a pre-built index to avoid N+1 queries during the send loop.
  */
 export function resolveVariables(
- variables: Record<string, VariableMapping>,
- contact: Contact,
- customValues?: Map<string, string>,
+  template: MessageTemplate,
+  variables: Record<string, VariableMapping>,
+  contact: Contact,
+  customValues?: Map<string, string>,
+  /** Per-row CSV variable values — highest priority override. */
+  csvVars?: Record<string, string>,
 ): string[] {
- // Keys are typically "1","2",... — numeric-aware sort keeps
- // {{1}} before {{10}}.
- const keys = Object.keys(variables).sort((a, b) => {
- const an = Number(a);
- const bn = Number(b);
- if (Number.isFinite(an) && Number.isFinite(bn)) return an - bn;
- return a.localeCompare(b);
- });
+  const matches = template.body_text.match(/\{\{(\d+)\}\}/g);
+  if (!matches) return [];
 
- return keys.map((key) => {
- const v = variables[key];
- if (v.type === 'static') return v.value;
+  const uniqueKeys = [...new Set(matches.map(m => m.replace(/^\{\{|\}\}$/g, '')))];
+  const keys = uniqueKeys.sort((a, b) => Number(a) - Number(b));
 
- if (v.type === 'field') {
- const fieldMap: Record<string, string | undefined> = {
- name: contact.name,
- phone: contact.phone,
- email: contact.email,
- company: contact.company,
- };
- return fieldMap[v.value] ?? '';
- }
+  return keys.map((key) => {
+    // CSV vars take highest priority — they are per-contact values explicitly
+    // provided in the uploaded file, so they override any field mapping.
+    if (csvVars && csvVars[key] !== undefined && csvVars[key] !== '') {
+      return csvVars[key];
+    }
 
- // custom_field
- return customValues?.get(v.value) ?? '';
- });
+    const v = variables[key];
+    if (!v) return '';
+
+    if (v.type === 'static') return v.value;
+
+    if (v.type === 'field') {
+      const fieldMap: Record<string, string | undefined> = {
+        name: contact.name,
+        phone: contact.phone,
+        email: contact.email,
+        company: contact.company,
+      };
+      return fieldMap[v.value] ?? '';
+    }
+
+    // custom_field
+    return customValues?.get(v.value) ?? '';
+  });
 }
 
 /**
@@ -421,24 +429,37 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
  contactIds,
  );
 
- let failedCount = 0;
- const totalRecipients = recipients.length;
+  let failedCount = 0;
+  const totalRecipients = recipients.length;
+
+  // Build a phone → vars map for CSV broadcasts so each contact's
+  // uploaded variable values override the generic field mappings.
+  const csvVarsIndex = new Map<string, Record<string, string>>();
+  if (payload.audience.type === 'csv' && payload.audience.csvContacts) {
+    for (const csvRow of payload.audience.csvContacts) {
+      if (csvRow.phone && csvRow.vars) {
+        csvVarsIndex.set(csvRow.phone, csvRow.vars);
+      }
+    }
+  }
 
  for (let i = 0; i < recipients.length; i += SEND_BATCH_SIZE) {
  const batch = recipients.slice(i, i + SEND_BATCH_SIZE);
 
- const apiRecipients = batch
- .filter((r) => r.contact?.phone)
- .map((r) => ({
- phone: r.contact!.phone as string,
- params: r.contact
- ? resolveVariables(
- payload.variables,
- r.contact,
- customValueIndex.get(r.contact.id),
- )
- : [],
- }));
+  const apiRecipients = batch
+  .filter((r) => r.contact?.phone)
+  .map((r) => ({
+  phone: r.contact!.phone as string,
+  params: r.contact
+  ? resolveVariables(
+  payload.template,
+  payload.variables,
+  r.contact,
+  customValueIndex.get(r.contact.id),
+  csvVarsIndex.get(r.contact.phone as string),
+  )
+  : [],
+  }));
 
  if (apiRecipients.length === 0) continue;
 

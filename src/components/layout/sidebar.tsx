@@ -18,6 +18,7 @@ import {
  LogOut,
  User,
  X,
+ Shield,
 } from "lucide-react";
 import {
  Avatar,
@@ -211,6 +212,22 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
  </li>
  );
  })}
+        {profile?.email === "bitlanceai@gmail.com" && (
+          <li>
+            <Link
+              href="/admin"
+              className={cn(
+                "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors lg:py-2",
+                pathname.startsWith("/admin")
+                  ? "bg-primary/10 text-primary"
+                  : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+              )}
+            >
+              <Shield className="h-4 w-4" />
+              Admin
+            </Link>
+          </li>
+        )}
  </ul>
  </nav>
 

@@ -7,33 +7,33 @@ import { ThemeProvider } from "@/hooks/use-theme";
 import { DEFAULT_THEME, STORAGE_KEY, THEME_IDS } from "@/lib/themes";
 
 const inter = Inter({
- variable: "--font-sans",
- subsets: ["latin"],
+    variable: "--font-sans",
+    subsets: ["latin"],
 });
 
 export const metadata: Metadata = {
- title: {
- default: "Bitlance WhatsApp CRM",
- template: "%s — Bitlance WhatsApp CRM",
- },
- description: "Self-hostable Bitlance WhatsApp CRM.",
- robots: {
- index: false,
- follow: false,
- },
- icons: {
- icon: [{ url: "/icon" }],
- },
- formatDetection: {
- email: false,
- address: false,
- telephone: false,
- },
+    title: {
+        default: "Bitlance WhatsApp CRM",
+        template: "%s — Bitlance WhatsApp CRM",
+    },
+    description: "Self-hostable Bitlance WhatsApp CRM.",
+    robots: {
+        index: false,
+        follow: false,
+    },
+    icons: {
+        icon: [{ url: "/icon" }],
+    },
+    formatDetection: {
+        email: false,
+        address: false,
+        telephone: false,
+    },
 };
 
 export const viewport: Viewport = {
- themeColor: "#ffffff",
- colorScheme: "light",
+    themeColor: "#ffffff",
+    colorScheme: "light",
 };
 
 // Inline boot script — runs before React hydrates so the user's
@@ -61,39 +61,40 @@ const THEME_BOOT_SCRIPT = `
 `;
 
 export default function RootLayout({
- children,
+    children,
 }: Readonly<{
- children: React.ReactNode;
+    children: React.ReactNode;
 }>) {
- return (
- <html
- lang="en"
- data-theme={DEFAULT_THEME}
- className={`${inter.variable} h-full antialiased`}
- >
- <head>
- <Script
- id="theme-boot"
- strategy="beforeInteractive"
- dangerouslySetInnerHTML={{ __html: THEME_BOOT_SCRIPT }}
- />
- </head>
- <body className="min-h-full bg-background text-foreground font-sans">
- <ThemeProvider>
- {children}
- <Toaster
- theme="dark"
- position="top-right"
- toastOptions={{
- style: {
- background: "rgb(30 41 59)",
- border: "1px solid rgb(51 65 85)",
- color: "white",
- },
- }}
- />
- </ThemeProvider>
- </body>
- </html>
- );
+    return (
+        <html
+            lang="en"
+            data-theme={DEFAULT_THEME}
+            className={`${inter.variable} h-full antialiased`}
+            suppressHydrationWarning
+        >
+            <head>
+                <Script
+                    id="theme-boot"
+                    strategy="beforeInteractive"
+                    dangerouslySetInnerHTML={{ __html: THEME_BOOT_SCRIPT }}
+                />
+            </head>
+            <body className="min-h-full bg-background text-foreground font-sans">
+                <ThemeProvider>
+                    {children}
+                    <Toaster
+                        theme="dark"
+                        position="top-right"
+                        toastOptions={{
+                            style: {
+                                background: "rgb(30 41 59)",
+                                border: "1px solid rgb(51 65 85)",
+                                color: "white",
+                            },
+                        }}
+                    />
+                </ThemeProvider>
+            </body>
+        </html>
+    );
 }

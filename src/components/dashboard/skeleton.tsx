@@ -6,20 +6,20 @@ import { cn } from '@/lib/utils'
  * its data fetches.
  */
 export function Skeleton({ className }: { className?: string }) {
- return <div className={cn('animate-pulse rounded-md bg-accent', className)} />
+    return <div className={cn('animate-pulse rounded-md bg-accent', className)} />
 }
 
 export function SkeletonCard({ className }: { className?: string }) {
- return (
- <div
- className={cn(
- 'rounded-xl border border-border bg-background p-5',
- className,
- )}
- >
- <Skeleton className="h-4 w-32" />
- <Skeleton className="mt-4 h-8 w-20" />
- <Skeleton className="mt-2 h-3 w-16" />
- </div>
- )
+    return (
+        <div
+            className={cn(
+                'rounded-xl border border-border bg-background p-5',
+                className,
+            )}
+        >
+            <Skeleton className="h-4 w-32" />
+            <Skeleton className="mt-4 h-8 w-20" />
+            <Skeleton className="mt-2 h-3 w-16" />
+        </div>
+    )
 }
