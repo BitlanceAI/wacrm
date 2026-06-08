@@ -1,18 +1,11 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { Contact, CustomField, MessageTemplate } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import {
-    Select,
-    SelectContent,
-    SelectItem,
-    SelectTrigger,
-    SelectValue,
-} from '@/components/ui/select';
-import { ArrowLeft, ArrowRight, Eye, Loader2 } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Eye, GripVertical, Loader2, X } from 'lucide-react';
 
 type VariableType = 'static' | 'field' | 'custom_field';
 
@@ -30,10 +23,10 @@ interface Step3Props {
 }
 
 const contactFields = [
-    { value: 'name', label: 'Contact Name' },
-    { value: 'phone', label: 'Phone Number' },
-    { value: 'email', label: 'Email Address' },
-    { value: 'company', label: 'Company' },
+    { value: 'name', label: 'Contact Name', icon: '👤' },
+    { value: 'phone', label: 'Phone Number', icon: '📱' },
+    { value: 'email', label: 'Email Address', icon: '✉️' },
+    { value: 'company', label: 'Company', icon: '🏢' },
 ];
 
 const SAMPLE_CONTACT: Contact = {
@@ -47,6 +40,14 @@ const SAMPLE_CONTACT: Contact = {
     updated_at: new Date().toISOString(),
 };
 
+// Encode a chip's data as a JSON string for the drag payload
+function encodeChip(type: VariableType, value: string, label: string) {
+    return JSON.stringify({ type, value, label });
+}
+function decodeChip(raw: string): { type: VariableType; value: string; label: string } | null {
+    try { return JSON.parse(raw); } catch { return null; }
+}
+
 export function Step3Personalize({
     template,
     variables,
@@ -57,13 +58,11 @@ export function Step3Personalize({
     const [customFields, setCustomFields] = useState<CustomField[]>([]);
     const [loadingFields, setLoadingFields] = useState(true);
     const [firstContact, setFirstContact] = useState<Contact | null>(null);
-    const [firstContactCustomValues, setFirstContactCustomValues] = useState<
-        Map<string, string>
-    >(new Map());
+    const [firstContactCustomValues, setFirstContactCustomValues] = useState<Map<string, string>>(new Map());
     const [loadingPreview, setLoadingPreview] = useState(true);
+    const [dragOver, setDragOver] = useState<string | null>(null); // key being hovered
+    const staticInputRef = useRef<Record<string, string>>({});
 
-    // Load user's custom fields + a representative contact for the
-    // live preview. Fall back to sample data if no contacts exist yet.
     useEffect(() => {
         let cancelled = false;
         (async () => {
@@ -100,9 +99,7 @@ export function Step3Personalize({
             }
             setLoadingPreview(false);
         })();
-        return () => {
-            cancelled = true;
-        };
+        return () => { cancelled = true; };
     }, []);
 
     const placeholders = useMemo(() => {
@@ -111,12 +108,6 @@ export function Step3Personalize({
         return [...new Set(matches)].sort();
     }, [template.body_text]);
 
-    /**
-    * A placeholder is "unmapped" if the user hasn't picked either a
-    * static value or a field/custom-field source. Blocks Next until
-    * every placeholder has something — otherwise the broadcast would
-    * ship with empty strings and confuse recipients.
-    */
     const unmappedKeys = useMemo(() => {
         const missing: string[] = [];
         for (const placeholder of placeholders) {
@@ -129,30 +120,25 @@ export function Step3Personalize({
         return missing;
     }, [placeholders, variables]);
 
-    function updateVariable(key: string, patch: Partial<VariableMapping>) {
-        const current = variables[key] ?? { type: 'static' as VariableType, value: '' };
-        onUpdate({
-            ...variables,
-            [key]: { ...current, ...patch },
-        });
+    function setMapping(key: string, type: VariableType, value: string) {
+        onUpdate({ ...variables, [key]: { type, value } });
     }
 
-    /**
-    * Substitute placeholders using the first real contact where
-    * possible. Placeholders keyed by "{{N}}" map to variable key "N".
-    */
+    function clearMapping(key: string) {
+        const next = { ...variables };
+        delete next[key];
+        onUpdate(next);
+    }
+
+    // Live preview
     const previewText = useMemo(() => {
         const contact = firstContact ?? SAMPLE_CONTACT;
-        const customValues = firstContact
-            ? firstContactCustomValues
-            : new Map<string, string>();
-
+        const customValues = firstContact ? firstContactCustomValues : new Map<string, string>();
         let text = template.body_text;
         for (const placeholder of placeholders) {
             const key = placeholder.replace(/^\{\{|\}\}$/g, '');
             const mapping = variables[key];
             let replacement = placeholder;
-
             if (mapping) {
                 if (mapping.type === 'static' && mapping.value) {
                     replacement = mapping.value;
@@ -171,160 +157,205 @@ export function Step3Personalize({
             text = text.replaceAll(placeholder, replacement);
         }
         return text;
-    }, [
-        template.body_text,
-        variables,
-        placeholders,
-        firstContact,
-        firstContactCustomValues,
-    ]);
+    }, [template.body_text, variables, placeholders, firstContact, firstContactCustomValues]);
 
-    const previewLabel = firstContact
-        ? firstContact.name || firstContact.phone
-        : 'sample data';
+    const previewLabel = firstContact ? (firstContact.name || firstContact.phone) : 'sample data';
+
+    // Label lookup for a mapped variable (shown inside the drop zone)
+    function getMappedLabel(key: string): string {
+        const m = variables[key];
+        if (!m) return '';
+        if (m.type === 'static') return `"${m.value}"`;
+        if (m.type === 'field') {
+            return contactFields.find(f => f.value === m.value)?.label ?? m.value;
+        }
+        return customFields.find(f => f.id === m.value)?.field_name ?? m.value;
+    }
+
+    function getMappedIcon(key: string): string {
+        const m = variables[key];
+        if (!m) return '';
+        if (m.type === 'static') return '✏️';
+        if (m.type === 'field') return contactFields.find(f => f.value === m.value)?.icon ?? '•';
+        return '🗂️';
+    }
 
     return (
         <div className="space-y-6">
             <div>
                 <h2 className="text-lg font-semibold text-foreground">Personalize Message</h2>
                 <p className="mt-1 text-sm text-muted-foreground">
-                    Map template variables to contact fields, custom fields, or static
-                    values.
+                    Drag a field onto each <span className="font-mono text-primary">{'{{variable}}'}</span> slot to map it.
                 </p>
             </div>
 
             {placeholders.length === 0 ? (
                 <div className="rounded-xl border border-border bg-background/50 p-6 text-center">
-                    <p className="text-sm text-muted-foreground">
-                        This template has no variables to personalize.
-                    </p>
+                    <p className="text-sm text-muted-foreground">This template has no variables to personalize.</p>
                 </div>
             ) : (
-                <div className="space-y-4">
-                    {placeholders.map((placeholder) => {
-                        const key = placeholder.replace(/^\{\{|\}\}$/g, '');
-                        const mapping = variables[key] ?? { type: 'static', value: '' };
+                <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
 
-                        return (
-                            <div
-                                key={placeholder}
-                                className="rounded-xl border border-border bg-background/50 p-4"
-                            >
-                                <div className="mb-3 flex items-center gap-2">
-                                    <span className="inline-flex items-center rounded-md bg-primary/10 px-2 py-0.5 text-xs font-mono font-medium text-primary">
-                                        {placeholder}
-                                    </span>
-                                </div>
+                    {/* ── LEFT: Draggable field chips ──────────────────── */}
+                    <div className="space-y-4">
+                        <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Available Fields</p>
 
-                                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                                    <div>
-                                        <label className="mb-1.5 block text-xs font-medium text-muted-foreground">
-                                            Mapping Type
-                                        </label>
-                                        <Select
-                                            value={mapping.type}
-                                            onValueChange={(val) =>
-                                                updateVariable(key, {
-                                                    type: val as VariableType,
-                                                    value: '',
-                                                })
+                        {/* Contact fields */}
+                        <div className="space-y-2">
+                            <p className="text-xs text-muted-foreground">Contact Fields</p>
+                            <div className="flex flex-wrap gap-2">
+                                {contactFields.map((field) => (
+                                    <div
+                                        key={field.value}
+                                        draggable
+                                        onDragStart={(e) =>
+                                            e.dataTransfer.setData('text/plain', encodeChip('field', field.value, field.label))
+                                        }
+                                        className="flex cursor-grab items-center gap-1.5 rounded-lg border border-border bg-accent px-3 py-1.5 text-sm text-foreground shadow-sm transition-all active:cursor-grabbing active:scale-95 hover:border-primary/50 hover:bg-primary/10 hover:text-primary select-none"
+                                    >
+                                        <GripVertical className="h-3 w-3 text-muted-foreground" />
+                                        <span>{field.icon}</span>
+                                        <span>{field.label}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+
+                        {/* Custom fields */}
+                        {!loadingFields && customFields.length > 0 && (
+                            <div className="space-y-2">
+                                <p className="text-xs text-muted-foreground">Custom Fields</p>
+                                <div className="flex flex-wrap gap-2">
+                                    {customFields.map((f) => (
+                                        <div
+                                            key={f.id}
+                                            draggable
+                                            onDragStart={(e) =>
+                                                e.dataTransfer.setData('text/plain', encodeChip('custom_field', f.id, f.field_name))
                                             }
+                                            className="flex cursor-grab items-center gap-1.5 rounded-lg border border-border bg-accent px-3 py-1.5 text-sm text-foreground shadow-sm transition-all active:cursor-grabbing active:scale-95 hover:border-primary/50 hover:bg-primary/10 hover:text-primary select-none"
                                         >
-                                            <SelectTrigger className="w-full border-border bg-accent text-foreground">
-                                                <SelectValue />
-                                            </SelectTrigger>
-                                            <SelectContent className="border-border bg-accent">
-                                                <SelectItem value="static">Static Value</SelectItem>
-                                                <SelectItem value="field">Contact Field</SelectItem>
-                                                <SelectItem value="custom_field">
-                                                    Custom Field
-                                                </SelectItem>
-                                            </SelectContent>
-                                        </Select>
-                                    </div>
-
-                                    <div>
-                                        <label className="mb-1.5 block text-xs font-medium text-muted-foreground">
-                                            {mapping.type === 'static' ? 'Value' : 'Field'}
-                                        </label>
-                                        {mapping.type === 'static' ? (
-                                            <Input
-                                                value={mapping.value}
-                                                onChange={(e) =>
-                                                    updateVariable(key, { value: e.target.value })
-                                                }
-                                                placeholder="Enter value..."
-                                                className="border-border bg-accent text-foreground placeholder:text-muted-foreground"
-                                            />
-                                        ) : mapping.type === 'field' ? (
-                                            <Select
-                                                value={mapping.value || undefined}
-                                                onValueChange={(val) =>
-                                                    updateVariable(key, { value: val || '' })
-                                                }
-                                            >
-                                                <SelectTrigger className="w-full border-border bg-accent text-foreground">
-                                                    <SelectValue placeholder="Select field..." />
-                                                </SelectTrigger>
-                                                <SelectContent className="border-border bg-accent">
-                                                    {contactFields.map((field) => (
-                                                        <SelectItem key={field.value} value={field.value}>
-                                                            {field.label}
-                                                        </SelectItem>
-                                                    ))}
-                                                </SelectContent>
-                                            </Select>
-                                        ) : (
-                                            <Select
-                                                value={mapping.value || undefined}
-                                                onValueChange={(val) =>
-                                                    updateVariable(key, { value: val || '' })
-                                                }
-                                            >
-                                                <SelectTrigger className="w-full border-border bg-accent text-foreground">
-                                                    <SelectValue
-                                                        placeholder={
-                                                            loadingFields
-                                                                ? 'Loading…'
-                                                                : customFields.length === 0
-                                                                    ? 'No custom fields'
-                                                                    : 'Select custom field…'
-                                                        }
-                                                    />
-                                                </SelectTrigger>
-                                                <SelectContent className="border-border bg-accent">
-                                                    {customFields.map((f) => (
-                                                        <SelectItem key={f.id} value={f.id}>
-                                                            {f.field_name}
-                                                        </SelectItem>
-                                                    ))}
-                                                </SelectContent>
-                                            </Select>
-                                        )}
-                                    </div>
+                                            <GripVertical className="h-3 w-3 text-muted-foreground" />
+                                            <span>🗂️</span>
+                                            <span>{f.field_name}</span>
+                                        </div>
+                                    ))}
                                 </div>
                             </div>
-                        );
-                    })}
+                        )}
+                        {loadingFields && (
+                            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading custom fields…
+                            </div>
+                        )}
+
+                        {/* Static text chip */}
+                        <div className="space-y-2">
+                            <p className="text-xs text-muted-foreground">Static Text</p>
+                            <div
+                                draggable
+                                onDragStart={(e) =>
+                                    e.dataTransfer.setData('text/plain', encodeChip('static', '__static__', 'Static Text'))
+                                }
+                                className="flex cursor-grab items-center gap-1.5 rounded-lg border border-dashed border-border bg-accent/50 px-3 py-1.5 text-sm text-muted-foreground transition-all active:cursor-grabbing active:scale-95 hover:border-primary/50 hover:text-primary select-none"
+                            >
+                                <GripVertical className="h-3 w-3" />
+                                <span>✏️</span>
+                                <span>Static Value</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* ── RIGHT: Drop zones for each placeholder ────────── */}
+                    <div className="space-y-3">
+                        <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Variable Slots</p>
+                        {placeholders.map((placeholder) => {
+                            const key = placeholder.replace(/^\{\{|\}\}$/g, '');
+                            const mapping = variables[key];
+                            const isOver = dragOver === key;
+                            const isMapped = !!(mapping?.value?.trim());
+
+                            return (
+                                <div key={placeholder} className="space-y-1">
+                                    {/* Drop zone */}
+                                    <div
+                                        onDragOver={(e) => { e.preventDefault(); setDragOver(key); }}
+                                        onDragLeave={() => setDragOver(null)}
+                                        onDrop={(e) => {
+                                            e.preventDefault();
+                                            setDragOver(null);
+                                            const raw = e.dataTransfer.getData('text/plain');
+                                            const chip = decodeChip(raw);
+                                            if (!chip) return;
+                                            if (chip.type === 'static') {
+                                                // start with empty static, user types in the input below
+                                                setMapping(key, 'static', '');
+                                            } else {
+                                                setMapping(key, chip.type, chip.value);
+                                            }
+                                        }}
+                                        className={[
+                                            'relative flex min-h-[52px] items-center gap-3 rounded-xl border-2 px-4 py-3 transition-all',
+                                            isOver
+                                                ? 'border-primary bg-primary/10 shadow-md shadow-primary/20'
+                                                : isMapped
+                                                    ? 'border-primary/40 bg-primary/5'
+                                                    : 'border-dashed border-border bg-background/30',
+                                        ].join(' ')}
+                                    >
+                                        {/* Placeholder badge */}
+                                        <span className="shrink-0 rounded bg-primary/15 px-1.5 py-0.5 font-mono text-xs font-semibold text-primary">
+                                            {placeholder}
+                                        </span>
+
+                                        {isMapped ? (
+                                            <>
+                                                <span className="text-base">{getMappedIcon(key)}</span>
+                                                <span className="flex-1 truncate text-sm font-medium text-foreground">
+                                                    {getMappedLabel(key)}
+                                                </span>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => clearMapping(key)}
+                                                    className="ml-auto shrink-0 rounded p-0.5 text-muted-foreground hover:bg-red-500/20 hover:text-red-400"
+                                                    title="Remove mapping"
+                                                >
+                                                    <X className="h-3.5 w-3.5" />
+                                                </button>
+                                            </>
+                                        ) : (
+                                            <span className="text-xs text-muted-foreground">
+                                                {isOver ? '📌 Drop here' : 'Drag a field here…'}
+                                            </span>
+                                        )}
+                                    </div>
+
+                                    {/* Inline text input when static is mapped but value is still empty */}
+                                    {mapping?.type === 'static' && (
+                                        <Input
+                                            autoFocus
+                                            value={mapping.value}
+                                            onChange={(e) => setMapping(key, 'static', e.target.value)}
+                                            placeholder="Type the static value…"
+                                            className="border-border bg-accent text-foreground placeholder:text-muted-foreground text-sm"
+                                        />
+                                    )}
+                                </div>
+                            );
+                        })}
+                    </div>
                 </div>
             )}
 
-            {/* Live Preview — always uses WhatsApp's exact brand colors via inline
-                styles so it looks correct regardless of the app's current theme. */}
+            {/* Live Preview */}
             <div className="rounded-xl border border-border bg-background/50 p-4">
                 <div className="mb-3 flex items-center gap-2">
                     <Eye className="h-4 w-4 text-primary" />
                     <p className="text-sm font-medium text-foreground">Live Preview</p>
                     <span className="text-xs text-muted-foreground">({previewLabel})</span>
-                    {loadingPreview && (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
-                    )}
+                    {loadingPreview && <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />}
                 </div>
-                {/* Outer chat pane — WhatsApp dark chat background */}
-                <div
-                    style={{ backgroundColor: '#0b141a', borderRadius: '8px', padding: '12px' }}
-                >
-                    {/* Sent message bubble — right-aligned, WhatsApp teal */}
+                <div style={{ backgroundColor: '#0b141a', borderRadius: '8px', padding: '12px' }}>
                     <div
                         style={{
                             marginLeft: 'auto',
@@ -335,18 +366,9 @@ export function Step3Personalize({
                             boxShadow: '0 1px 2px rgba(0,0,0,0.4)',
                         }}
                     >
-                        <p
-                            style={{
-                                whiteSpace: 'pre-wrap',
-                                fontSize: '14px',
-                                lineHeight: '1.5',
-                                color: '#e9edef',
-                                margin: 0,
-                            }}
-                        >
+                        <p style={{ whiteSpace: 'pre-wrap', fontSize: '14px', lineHeight: '1.5', color: '#e9edef', margin: 0 }}>
                             {previewText}
                         </p>
-                        {/* Timestamp row */}
                         <div style={{ textAlign: 'right', marginTop: '4px' }}>
                             <span style={{ fontSize: '11px', color: '#8696a0' }}>
                                 {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} ✓✓
@@ -359,19 +381,12 @@ export function Step3Personalize({
             {unmappedKeys.length > 0 && (
                 <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
                     Map every placeholder before continuing — still missing{' '}
-                    <span className="font-mono font-semibold">
-                        {unmappedKeys.join(', ')}
-                    </span>
-                    . Otherwise those placeholders will ship to Meta as empty strings.
+                    <span className="font-mono font-semibold">{unmappedKeys.join(', ')}</span>.
                 </div>
             )}
 
             <div className="flex items-center justify-between border-t border-border pt-4">
-                <Button
-                    variant="outline"
-                    onClick={onBack}
-                    className="border-border text-foreground"
-                >
+                <Button variant="outline" onClick={onBack} className="border-border text-foreground">
                     <ArrowLeft className="h-4 w-4" />
                     Back
                 </Button>

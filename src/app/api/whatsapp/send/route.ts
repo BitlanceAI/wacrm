@@ -45,6 +45,7 @@ export async function POST(request: Request) {
  content_text,
  media_url,
  template_name,
+ template_language,
  template_params,
  reply_to_message_id,
  } = body
@@ -184,6 +185,7 @@ export async function POST(request: Request) {
  accessToken,
  to: phone,
  templateName: template_name,
+ language: template_language || 'en_US',
  params: template_params || [],
  contextMessageId,
  })

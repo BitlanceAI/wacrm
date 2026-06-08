@@ -51,7 +51,10 @@ export async function PATCH(
  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
  const body = await request.json().catch(() => null)
- if (!body) return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
+ if (!body) {
+  console.error(`[automations PATCH] Invalid JSON for id: ${id}`)
+  return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
+ }
 
  const admin = supabaseAdmin()
 
@@ -94,13 +97,14 @@ export async function PATCH(
  ...validateStepsForActivation(mergedSteps),
  ]
  if (issues.length > 0) {
- return NextResponse.json(
- {
- error: 'Cannot keep automation active with invalid configuration',
- issues,
- },
- { status: 400 },
- )
+  console.error(`[automations PATCH] Validation issues for id: ${id}`, issues)
+  return NextResponse.json(
+  {
+  error: 'Cannot keep automation active with invalid configuration',
+  issues,
+  },
+  { status: 400 },
+  )
  }
  }
 

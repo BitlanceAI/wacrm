@@ -85,12 +85,22 @@ export function resolveVariables(
   csvVars?: Record<string, string>,
 ): string[] {
   const matches = template.body_text.match(/\{\{(\d+)\}\}/g);
-  if (!matches) return [];
+
+  console.log(
+    `[resolveVariables] template="${template.name}"  body="${template.body_text.slice(0, 80)}"  detectedPlaceholders=${JSON.stringify(matches ?? [])}  variableKeys=${JSON.stringify(Object.keys(variables))}`
+  );
+
+  if (!matches) {
+    console.warn(
+      `[resolveVariables] No {{N}} placeholders found in body — sending params=[]. If Meta rejects with #132012, the template stored in DB may differ from what Meta has.`
+    );
+    return [];
+  }
 
   const uniqueKeys = [...new Set(matches.map(m => m.replace(/^\{\{|\}\}$/g, '')))];
   const keys = uniqueKeys.sort((a, b) => Number(a) - Number(b));
 
-  return keys.map((key) => {
+  const resolved = keys.map((key) => {
     // CSV vars take highest priority — they are per-contact values explicitly
     // provided in the uploaded file, so they override any field mapping.
     if (csvVars && csvVars[key] !== undefined && csvVars[key] !== '') {
@@ -98,7 +108,10 @@ export function resolveVariables(
     }
 
     const v = variables[key];
-    if (!v) return '';
+    if (!v) {
+      console.warn(`[resolveVariables] No mapping for placeholder {{${key}}} — contact="${contact.phone}" will receive empty string`);
+      return '';
+    }
 
     if (v.type === 'static') return v.value;
 
@@ -109,12 +122,19 @@ export function resolveVariables(
         email: contact.email,
         company: contact.company,
       };
-      return fieldMap[v.value] ?? '';
+      const result = fieldMap[v.value] ?? '';
+      if (!result) console.warn(`[resolveVariables] field "${v.value}" is empty for contact="${contact.phone}"`);
+      return result;
     }
 
     // custom_field
-    return customValues?.get(v.value) ?? '';
+    const result = customValues?.get(v.value) ?? '';
+    if (!result) console.warn(`[resolveVariables] custom_field id="${v.value}" has no value for contact="${contact.phone}"`);
+    return result;
   });
+
+  console.log(`[resolveVariables] contact="${contact.phone}"  resolvedParams=${JSON.stringify(resolved)}`);
+  return resolved;
 }
 
 /**
@@ -461,18 +481,25 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
   : [],
   }));
 
- if (apiRecipients.length === 0) continue;
+  if (apiRecipients.length === 0) continue;
 
- try {
- const res = await fetch('/api/whatsapp/broadcast', {
- method: 'POST',
- headers: { 'Content-Type': 'application/json' },
- body: JSON.stringify({
- recipients: apiRecipients,
- template_name: payload.template.name,
- template_language: payload.template.language ?? 'en_US',
- }),
- });
+  console.log(
+    `[broadcast-send] Batch ${Math.floor(i / SEND_BATCH_SIZE) + 1} — template="${payload.template.name}"  lang="${payload.template.language ?? 'en_US'}"  recipients=${apiRecipients.length}`
+  );
+  apiRecipients.forEach((r) =>
+    console.log(`  → phone="${r.phone}"  params=${JSON.stringify(r.params)}`)
+  );
+
+  try {
+  const res = await fetch('/api/whatsapp/broadcast', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+  recipients: apiRecipients,
+  template_name: payload.template.name,
+  template_language: payload.template.language ?? 'en_US',
+  }),
+  });
 
  const data = await res.json();
 
