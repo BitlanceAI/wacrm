@@ -15,6 +15,7 @@ import {
  type DragStartEvent,
 } from "@dnd-kit/core";
 import type { Deal, PipelineStage } from "@/types";
+import { formatCurrency } from "@/lib/utils";
 import { DealCard } from "./deal-card";
 import { Button } from "@/components/ui/button";
 import { Plus } from "lucide-react";
@@ -25,15 +26,6 @@ interface PipelineBoardProps {
  onDealMoved: (dealId: string, newStageId: string) => void;
  onAddDeal: (stageId: string) => void;
  onEditDeal: (deal: Deal) => void;
-}
-
-function formatCurrency(value: number) {
- return new Intl.NumberFormat("en-IN", {
- style: "currency",
- currency: "INR",
- minimumFractionDigits: 0,
- maximumFractionDigits: 0,
- }).format(value);
 }
 
 export function PipelineBoard({

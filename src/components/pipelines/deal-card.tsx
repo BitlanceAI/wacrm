@@ -2,21 +2,13 @@
 
 import type { Deal, PipelineStage } from "@/types";
 import { Calendar, Check, X } from "lucide-react";
+import { formatCurrency } from "@/lib/utils";
 
 interface DealCardProps {
  deal: Deal;
  stage: PipelineStage | null;
  onEdit: (deal: Deal) => void;
  isOverlay?: boolean;
-}
-
-function formatCurrency(value: number, currency?: string) {
- return new Intl.NumberFormat("en-IN", {
- style: "currency",
- currency: currency || "INR",
- minimumFractionDigits: 0,
- maximumFractionDigits: 0,
- }).format(Number(value || 0));
 }
 
 function formatDate(dateStr: string) {
@@ -88,7 +80,7 @@ export function DealCard({ deal, stage, onEdit, isOverlay }: DealCardProps) {
 
  <div className="mt-2 flex items-center justify-between">
  <span className="text-sm font-bold text-primary">
- {formatCurrency(deal.value, deal.currency)}
+ {formatCurrency(deal.value)}
  </span>
  {deal.expected_close_date && (
  <span className="flex items-center gap-1 text-[11px] text-muted-foreground">

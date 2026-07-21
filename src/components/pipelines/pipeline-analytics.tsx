@@ -2,6 +2,7 @@
 
 import { useMemo } from "react";
 import type { Deal, PipelineStage } from "@/types";
+import { formatCurrency } from "@/lib/utils";
 import {
  IndianRupee,
  TrendingUp,
@@ -21,15 +22,6 @@ import {
 interface PipelineAnalyticsProps {
  stages: PipelineStage[];
  deals: Deal[];
-}
-
-function formatCurrency(value: number) {
- return new Intl.NumberFormat("en-IN", {
- style: "currency",
- currency: "INR",
- minimumFractionDigits: 0,
- maximumFractionDigits: 0,
- }).format(value);
 }
 
 /**

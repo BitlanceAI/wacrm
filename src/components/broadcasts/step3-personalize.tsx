@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { Contact, CustomField, MessageTemplate } from '@/types';
 import { Button } from '@/components/ui/button';
@@ -61,7 +61,6 @@ export function Step3Personalize({
     const [firstContactCustomValues, setFirstContactCustomValues] = useState<Map<string, string>>(new Map());
     const [loadingPreview, setLoadingPreview] = useState(true);
     const [dragOver, setDragOver] = useState<string | null>(null); // key being hovered
-    const staticInputRef = useRef<Record<string, string>>({});
 
     useEffect(() => {
         let cancelled = false;

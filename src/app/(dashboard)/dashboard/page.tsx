@@ -23,6 +23,7 @@ import type {
  PipelineDonutData,
  ResponseTimeSummary,
 } from '@/lib/dashboard/types'
+import { formatCurrency } from '@/lib/utils'
 
 import { MetricCard } from '@/components/dashboard/metric-card'
 import { SkeletonCard } from '@/components/dashboard/skeleton'
@@ -210,15 +211,6 @@ export default function DashboardPage() {
 }
 
 // ------------------------------------------------------------
-
-function formatCurrency(v: number): string {
- return new Intl.NumberFormat('en-IN', {
- style: 'currency',
- currency: 'INR',
- minimumFractionDigits: 0,
- maximumFractionDigits: 0,
- }).format(v)
-}
 
 function deltaLabel(delta: number, suffix: string): string {
  if (delta === 0) return `No change ${suffix}`

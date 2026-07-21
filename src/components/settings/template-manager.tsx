@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import { Plus, Trash2, Loader2, RefreshCw } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
+import { maybeSyncTemplates } from '@/lib/whatsapp/template-sync';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -108,6 +109,11 @@ export function TemplateManager() {
  return;
  }
  fetchTemplates(user.id);
+ // Background: if the cached copy is stale, pull fresh templates from
+ // Meta and refetch so newly-approved templates appear on their own.
+ maybeSyncTemplates(user.id).then((changed) => {
+ if (changed) fetchTemplates(user.id);
+ });
  // eslint-disable-next-line react-hooks/exhaustive-deps
  }, [authLoading, user?.id]);
 
@@ -154,7 +160,12 @@ export function TemplateManager() {
  category: form.category,
  language: form.language.trim() || 'en_US',
  body_text: form.body_text.trim(),
- header_type: form.header_type || null,
+ // "none" is the UI sentinel for "no header"; the DB CHECK only allows
+ // text/image/video/document or NULL, so map it (and empty) to null.
+ header_type:
+ form.header_type && form.header_type !== 'none'
+ ? form.header_type
+ : null,
  footer_text: form.footer_text.trim() || null,
  status: 'Draft' as const,
  };

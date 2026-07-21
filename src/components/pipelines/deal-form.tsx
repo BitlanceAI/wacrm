@@ -285,7 +285,6 @@ export function DealForm({
  )}
  </div>
 
- <div className="grid grid-cols-[1fr_110px] gap-3">
  <div className="grid gap-2">
  <Label className="text-foreground">Value</Label>
  <div className="relative">
@@ -297,20 +296,6 @@ export function DealForm({
  placeholder="0"
  className="border-border bg-accent pl-7 text-foreground"
  />
- </div>
- </div>
- <div className="grid gap-2">
- <Label className="text-foreground">Currency</Label>
- <select
- value={currency}
- onChange={(e) => setCurrency(e.target.value)}
- className="h-9 w-full rounded-lg border border-border bg-accent px-2.5 text-sm text-foreground outline-none focus:border-primary"
- >
- <option value="INR">INR</option>
- <option value="USD">USD</option>
- <option value="EUR">EUR</option>
- <option value="GBP">GBP</option>
- </select>
  </div>
  </div>
 

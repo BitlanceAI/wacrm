@@ -123,35 +123,32 @@ export async function POST(request: Request) {
  const body = await request.json()
  const { phone_number_id, waba_id, access_token, verify_token } = body
 
- if (!access_token || !phone_number_id) {
+ if (!phone_number_id) {
  return NextResponse.json(
- { error: 'access_token and phone_number_id are required' },
+ { error: 'phone_number_id is required' },
  { status: 400 }
  )
  }
 
- // Verify credentials with Meta BEFORE saving
- let phoneInfo
- try {
- phoneInfo = await verifyPhoneNumber({
- phoneNumberId: phone_number_id,
- accessToken: access_token,
- })
- } catch (err) {
- const message = err instanceof Error ? err.message : 'Unknown Meta API error'
- console.error('Meta API verification failed during save:', message)
- return NextResponse.json(
- { error: `Meta API error: ${message}` },
- { status: 400 }
- )
- }
+ // Load any existing config first, so an update can reuse the stored
+ // token instead of forcing the user to paste the Permanent Access Token
+ // again every time they change something else (e.g. the WABA ID).
+ const { data: existing } = await supabase
+ .from('whatsapp_config')
+ .select('id, access_token, verify_token')
+ .eq('user_id', user.id)
+ .maybeSingle()
 
- // Encrypt sensitive tokens before storing
+ // Resolve which access token to verify + store:
+ //  - a freshly entered token always wins,
+ //  - otherwise reuse the stored (encrypted) one on update,
+ //  - initial setup with no token is an error.
+ let accessTokenPlain: string
  let encryptedAccessToken: string
- let encryptedVerifyToken: string | null
+ if (access_token) {
+ accessTokenPlain = access_token
  try {
  encryptedAccessToken = encrypt(access_token)
- encryptedVerifyToken = verify_token ? encrypt(verify_token) : null
  } catch (err) {
  const message = err instanceof Error ? err.message : 'Unknown encryption error'
  console.error('Encryption failed:', message)
@@ -163,13 +160,61 @@ export async function POST(request: Request) {
  { status: 500 }
  )
  }
+ } else if (existing) {
+ encryptedAccessToken = existing.access_token
+ try {
+ accessTokenPlain = decrypt(existing.access_token)
+ } catch (err) {
+ console.error('[whatsapp/config POST] Stored token decryption failed:', err)
+ return NextResponse.json(
+ {
+ error:
+ 'The stored access token cannot be decrypted with the current ENCRYPTION_KEY. Re-enter the Permanent Access Token to save.',
+ needs_reset: true,
+ },
+ { status: 400 }
+ )
+ }
+ } else {
+ return NextResponse.json(
+ { error: 'access_token and phone_number_id are required' },
+ { status: 400 }
+ )
+ }
 
- // Upsert — overwrite any existing (possibly corrupted) config
- const { data: existing } = await supabase
- .from('whatsapp_config')
- .select('id')
- .eq('user_id', user.id)
- .maybeSingle()
+ // Verify credentials with Meta BEFORE saving
+ let phoneInfo
+ try {
+ phoneInfo = await verifyPhoneNumber({
+ phoneNumberId: phone_number_id,
+ accessToken: accessTokenPlain,
+ })
+ } catch (err) {
+ const message = err instanceof Error ? err.message : 'Unknown Meta API error'
+ console.error('Meta API verification failed during save:', message)
+ return NextResponse.json(
+ { error: `Meta API error: ${message}` },
+ { status: 400 }
+ )
+ }
+
+ // Resolve the verify token the same way: only overwrite it when a new
+ // value is supplied, otherwise keep whatever is already stored.
+ let encryptedVerifyToken: string | null
+ if (verify_token) {
+ try {
+ encryptedVerifyToken = encrypt(verify_token)
+ } catch (err) {
+ const message = err instanceof Error ? err.message : 'Unknown encryption error'
+ console.error('Verify token encryption failed:', message)
+ return NextResponse.json(
+ { error: 'Failed to encrypt verify token.' },
+ { status: 500 }
+ )
+ }
+ } else {
+ encryptedVerifyToken = existing?.verify_token ?? null
+ }
 
  if (existing) {
  const { error: updateError } = await supabase

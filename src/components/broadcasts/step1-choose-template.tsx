@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
+import { useAuth } from '@/hooks/use-auth';
+import { maybeSyncTemplates } from '@/lib/whatsapp/template-sync';
 import { MessageTemplate } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Loader2, FileText, ArrowRight } from 'lucide-react';
@@ -20,11 +22,14 @@ interface Step1Props {
 }
 
 export function Step1ChooseTemplate({ selectedTemplate, onSelect, onNext, onBack }: Step1Props) {
+    const { user } = useAuth();
     const [templates, setTemplates] = useState<MessageTemplate[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
+        let cancelled = false;
+
         async function fetchTemplates() {
             try {
                 const supabase = createClient();
@@ -34,16 +39,27 @@ export function Step1ChooseTemplate({ selectedTemplate, onSelect, onNext, onBack
                     .order('created_at', { ascending: false });
 
                 if (fetchError) throw fetchError;
-                setTemplates(data ?? []);
+                if (!cancelled) setTemplates(data ?? []);
             } catch (err) {
-                setError(err instanceof Error ? err.message : 'Failed to load templates');
+                if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load templates');
             } finally {
-                setLoading(false);
+                if (!cancelled) setLoading(false);
             }
         }
 
-        fetchTemplates();
-    }, []);
+        (async () => {
+            await fetchTemplates(); // show cached copy immediately
+            // Then refresh from Meta if the cached copy is stale, so a
+            // template approved since the last visit shows up on its own.
+            if (user?.id) {
+                const changed = await maybeSyncTemplates(user.id);
+                if (changed && !cancelled) await fetchTemplates();
+            }
+        })();
+
+        return () => { cancelled = true; };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [user?.id]);
 
     if (loading) {
         return (

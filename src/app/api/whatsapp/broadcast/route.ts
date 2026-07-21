@@ -48,6 +48,24 @@ interface NewRecipient {
   params?: string[]
 }
 
+/**
+ * Turn opaque Meta template error codes into an actionable sentence.
+ * #132012 / #132000 stem from the params not matching the template's
+ * variables; #132001 means the name/language isn't on Meta at all. In
+ * every case the fix is to reconcile the local template with Meta, so
+ * point the user straight at the sync flow.
+ */
+function friendlyMetaError(raw: string | null): string {
+  if (!raw) return 'Unknown error'
+  if (raw.includes('132012') || raw.includes('132000')) {
+    return `${raw} — the parameters sent don't match the template's variables on Meta. Sync your templates (Settings → Templates → Sync) so the stored copy matches Meta, then rebuild and resend the broadcast.`
+  }
+  if (raw.includes('132001')) {
+    return `${raw} — Meta has no approved template with this name and language. Verify the template name/language, or sync templates from Meta.`
+  }
+  return raw
+}
+
 export async function POST(request: Request) {
   try {
     const supabase = await createClient()
@@ -127,15 +145,73 @@ export async function POST(request: Request) {
 
     // Fetch the local template body_text so we can log it and detect
     // mismatches between what's stored in the DB vs what Meta expects.
-    const { data: templateRow } = await supabase
+    // Diagnostic-only — never let it fail the broadcast. A user can have
+    // several templates that share a name across languages, so filter by
+    // language when provided and take the first row (limit(1)) rather than
+    // .maybeSingle(), which errors on more than one match.
+    let templateQuery = supabase
       .from('message_templates')
       .select('body_text')
       .eq('user_id', user.id)
       .eq('name', template_name)
-      .maybeSingle()
+    if (template_language) {
+      templateQuery = templateQuery.eq('language', template_language)
+    }
+    const { data: templateRows, error: templateLookupError } =
+      await templateQuery.limit(1)
+    const templateRow = templateRows?.[0] ?? null
+    if (templateLookupError) {
+      console.warn(
+        `[broadcast] template DB lookup failed (diagnostic only): ${templateLookupError.message}`
+      )
+    }
     console.log(
       `[broadcast] template DB body_text="${templateRow?.body_text?.slice(0, 120) ?? '(not found in DB)'}"  hasPlaceholders=${/\{\{\d+\}\}/.test(templateRow?.body_text ?? '')}  paramsSentPerRecipient=${JSON.stringify(recipients.map(r => ({ phone: r.phone, params: r.params ?? [] })))}`
     )
+
+    // ── Pre-flight parameter/placeholder guard ─────────────────────
+    // The #1 cause of Meta error #132012 ("Parameter format does not
+    // match format in the created template") is a mismatch between the
+    // number of {{N}} variables the template body has and the number of
+    // params we send. Catch it here, BEFORE spending any send quota, and
+    // return a message that says exactly how to fix it.
+    //
+    // Only enforced when the template is stored locally — if it isn't in
+    // the DB we can't know its shape, so we let Meta be the authority.
+    if (templateRow?.body_text != null) {
+      const expectedParamCount = new Set(
+        (templateRow.body_text.match(/\{\{(\d+)\}\}/g) ?? []).map((m: string) =>
+          m.replace(/\D/g, '')
+        )
+      ).size
+
+      const mismatched = recipients
+        .map((r, i) => ({
+          index: i,
+          phone: r.phone,
+          got: (r.params ?? []).length,
+        }))
+        .filter((r) => r.got !== expectedParamCount)
+
+      if (mismatched.length > 0) {
+        const sample = mismatched.slice(0, 5)
+        console.error(
+          `[broadcast] ✗ BLOCKED  template="${template_name}" expects ${expectedParamCount} param(s); ${mismatched.length}/${recipients.length} recipient(s) supplied a different count. Sample: ${JSON.stringify(sample)}`
+        )
+        return NextResponse.json(
+          {
+            error:
+              expectedParamCount === 0
+                ? `Template "${template_name}" has no {{1}}-style variables in its stored body, but ${mismatched.length} of ${recipients.length} recipient(s) were given parameter values. If the real template on Meta actually has variables, sync your templates (Settings → Templates → Sync) so the stored copy matches Meta, then rebuild the broadcast.`
+                : `Template "${template_name}" expects ${expectedParamCount} variable value(s) per recipient, but ${mismatched.length} of ${recipients.length} recipient(s) supplied a different number. Map every {{N}} placeholder in the personalize step so each recipient has exactly ${expectedParamCount} value(s), then try again.`,
+            code: 'TEMPLATE_PARAM_MISMATCH',
+            expected_param_count: expectedParamCount,
+            mismatched_sample: sample,
+          },
+          { status: 400 }
+        )
+      }
+    }
 
     // ── Broadcast start log ────────────────────────────────────────
     console.log(
@@ -223,7 +299,7 @@ export async function POST(request: Request) {
         results.push({
           phone: recipient.phone,
           status: 'failed',
-          error: lastError || 'Unknown error',
+          error: friendlyMetaError(lastError),
         })
         failedCount++
       }

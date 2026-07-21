@@ -28,6 +28,7 @@ import {
  AccordionContent,
 } from '@/components/ui/accordion';
 import type { WhatsAppConfig as WhatsAppConfigType } from '@/types';
+import { syncTemplates } from '@/lib/whatsapp/template-sync';
 
 const MASKED_TOKEN = '••••••••••••••••';
 
@@ -147,22 +148,20 @@ export function WhatsAppConfig() {
  // the access_token server-side with ENCRYPTION_KEY. Skipping this
  // and writing direct to Supabase stores the token in plaintext,
  // which then fails decryption on every subsequent health check.
+ // Only send fields the user actually provided. Omitting access_token
+ // (or verify_token) tells the server to keep the value already stored,
+ // so updates don't force the user to re-paste the permanent token.
  const payload: Record<string, unknown> = {
  phone_number_id: phoneNumberId.trim(),
  waba_id: wabaId.trim() || null,
- verify_token: verifyToken.trim() || null,
  };
+
+ if (verifyToken.trim()) {
+ payload.verify_token = verifyToken.trim();
+ }
 
  if (tokenEdited && accessToken !== MASKED_TOKEN && accessToken.trim()) {
  payload.access_token = accessToken.trim();
- } else if (config) {
- // Existing config — reuse stored encrypted token by decrypting on the
- // server. But our POST handler requires an access_token to verify
- // with Meta. If the user didn't change the token, we need to signal
- // that. Simplest: require token re-entry if they're updating.
- toast.error('Please re-enter the Access Token to save changes');
- setSaving(false);
- return;
  }
 
  const res = await fetch('/api/whatsapp/config', {
@@ -186,6 +185,21 @@ export function WhatsAppConfig() {
  );
 
  if (user) await fetchConfig(user.id);
+
+ // Auto-sync templates from Meta right after connecting, so a newly
+ // connected account's templates show up without a manual Sync click.
+ // Best-effort: needs a WABA ID, so surface only a soft hint on failure.
+ const sync = await syncTemplates(user?.id);
+ if (sync.ok && sync.changed > 0) {
+ toast.success(`Synced ${sync.changed} template${sync.changed === 1 ? '' : 's'} from Meta`);
+ } else if (!sync.ok) {
+ toast.message('Saved. Templates not auto-synced', {
+ description:
+ sync.error?.includes('WABA')
+ ? 'Add your WhatsApp Business Account ID to pull templates from Meta.'
+ : sync.error,
+ });
+ }
  } catch (err) {
  console.error('Save error:', err);
  toast.error('Failed to save configuration');
