@@ -72,6 +72,80 @@ interface BroadcastApiResult {
 type CustomValueIndex = Map<string, Map<string, string>>;
 
 /**
+ * PostgREST silently caps any select at 1000 rows. Every audience
+ * query here must page through .range() windows, or a broadcast to
+ * >1000 contacts sends to the first 1000 and quietly drops the rest —
+ * while the step-4 reach estimate (a count query, uncapped) still
+ * shows the full number.
+ *
+ * `page` must apply a stable ORDER BY, otherwise windows can overlap
+ * or skip rows between requests.
+ */
+const ROW_PAGE = 1000;
+async function fetchAllPages<T>(
+ page: (
+ from: number,
+ to: number,
+ ) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>,
+ label: string,
+): Promise<T[]> {
+ const all: T[] = [];
+ for (let from = 0; ; from += ROW_PAGE) {
+ const { data, error } = await page(from, from + ROW_PAGE - 1);
+ if (error) throw new Error(`${label}: ${error.message}`);
+ const rows = data ?? [];
+ all.push(...rows);
+ if (rows.length < ROW_PAGE) break;
+ }
+ return all;
+}
+
+/**
+ * Fetch contacts by id in IN-clause-sized chunks (PostgREST caps the
+ * .in() list around 1000 values, and each chunk stays under the row
+ * cap by construction).
+ */
+async function fetchContactsByIds(
+ supabase: ReturnType<typeof createClient>,
+ contactIds: string[],
+): Promise<Contact[]> {
+ const CHUNK = 500;
+ const contacts: Contact[] = [];
+ for (let i = 0; i < contactIds.length; i += CHUNK) {
+ const slice = contactIds.slice(i, i + CHUNK);
+ const { data, error } = await supabase
+ .from('contacts')
+ .select('*')
+ .in('id', slice);
+ if (error) throw new Error(`Failed to fetch contacts: ${error.message}`);
+ contacts.push(...(data ?? []));
+ }
+ return contacts;
+}
+
+/**
+ * All contact_ids carrying any of the given tags, paged past the row
+ * cap. Used for both include- and exclude-tag resolution.
+ */
+async function fetchContactIdsForTags(
+ supabase: ReturnType<typeof createClient>,
+ tagIds: string[],
+): Promise<Set<string>> {
+ const rows = await fetchAllPages<{ contact_id: string }>(
+ (from, to) =>
+ supabase
+ .from('contact_tags')
+ .select('contact_id')
+ .in('tag_id', tagIds)
+ .order('contact_id')
+ .order('tag_id')
+ .range(from, to),
+ 'Failed to fetch contact tags',
+ );
+ return new Set(rows.map((r) => r.contact_id));
+}
+
+/**
  * Per-contact resolution of custom-field placeholders. Static and
  * built-in-field mappings resolve synchronously; custom fields read
  * from a pre-built index to avoid N+1 queries during the send loop.
@@ -177,32 +251,19 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
  let contacts: Contact[] = [];
 
  if (audience.type === 'all') {
- const { data, error } = await supabase.from('contacts').select('*');
- if (error) throw new Error(`Failed to fetch contacts: ${error.message}`);
- contacts = data ?? [];
+ contacts = await fetchAllPages<Contact>(
+ (from, to) =>
+ supabase.from('contacts').select('*').order('id').range(from, to),
+ 'Failed to fetch contacts',
+ );
  } else if (
  audience.type === 'tags' &&
  audience.tagIds &&
  audience.tagIds.length > 0
  ) {
- const { data: contactTags, error: tagError } = await supabase
- .from('contact_tags')
- .select('contact_id')
- .in('tag_id', audience.tagIds);
-
- if (tagError)
- throw new Error(`Failed to fetch contact tags: ${tagError.message}`);
-
- if (contactTags && contactTags.length > 0) {
- const uniqueContactIds = [
- ...new Set(contactTags.map((ct) => ct.contact_id)),
- ];
- const { data, error } = await supabase
- .from('contacts')
- .select('*')
- .in('id', uniqueContactIds);
- if (error) throw new Error(`Failed to fetch contacts: ${error.message}`);
- contacts = data ?? [];
+ const taggedIds = await fetchContactIdsForTags(supabase, audience.tagIds);
+ if (taggedIds.size > 0) {
+ contacts = await fetchContactsByIds(supabase, [...taggedIds]);
  }
  } else if (audience.type === 'custom_field' && audience.customField) {
  contacts = await resolveCustomFieldAudience(supabase, audience.customField);
@@ -213,11 +274,10 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
  // Apply exclude tags (works across all contact-derived audience
  // types). CSV contacts are synthetic so exclusion doesn't apply.
  if (audience.excludeTagIds && audience.excludeTagIds.length > 0) {
- const { data: excludeRows } = await supabase
- .from('contact_tags')
- .select('contact_id')
- .in('tag_id', audience.excludeTagIds);
- const excludedIds = new Set((excludeRows ?? []).map((r) => r.contact_id));
+ const excludedIds = await fetchContactIdsForTags(
+ supabase,
+ audience.excludeTagIds,
+ );
  contacts = contacts.filter((c) => !excludedIds.has(c.id));
  }
 
@@ -310,29 +370,29 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
 
  // Build the WHERE clause for the operator. PostgREST supports
  // eq/neq/ilike via the query builder — use ilike with wildcards
- // for "contains" so the match is case-insensitive.
+ // for "contains" so the match is case-insensitive. Built fresh per
+ // page: builders are mutable, so reusing one across .range() calls
+ // would stack query params.
+ const buildQuery = () => {
  let query = supabase
  .from('contact_custom_values')
  .select('contact_id')
  .eq('custom_field_id', fieldId);
-
  if (operator === 'is') query = query.eq('value', value);
  else if (operator === 'is_not') query = query.neq('value', value);
  else if (operator === 'contains') query = query.ilike('value', `%${value}%`);
+ return query;
+ };
 
- const { data: matches, error: matchErr } = await query;
- if (matchErr)
- throw new Error(`Custom-field filter failed: ${matchErr.message}`);
+ const matches = await fetchAllPages<{ contact_id: string }>(
+ (from, to) => buildQuery().order('contact_id').range(from, to),
+ 'Custom-field filter failed',
+ );
 
- const contactIds = [...new Set((matches ?? []).map((m) => m.contact_id))];
+ const contactIds = [...new Set(matches.map((m) => m.contact_id))];
  if (contactIds.length === 0) return [];
 
- const { data, error } = await supabase
- .from('contacts')
- .select('*')
- .in('id', contactIds);
- if (error) throw new Error(`Failed to fetch contacts: ${error.message}`);
- return data ?? [];
+ return fetchContactsByIds(supabase, contactIds);
  }
 
  async function createAndSendBroadcast(payload: BroadcastPayload): Promise<string> {
@@ -430,14 +490,22 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
 
  // ── Step 4: Fetch recipients (joined contact) + preload custom values
  setProgress(30);
- const { data: recipients, error: recipientsFetchError } = await supabase
+ // Paged for the same reason as resolveAudience: an unpaged select
+ // caps at 1000 rows, and any recipient not fetched here would be
+ // skipped by the send loop and sit in `pending` forever.
+ const recipients = await fetchAllPages<{
+ id: string;
+ contact: Contact | null;
+ }>(
+ (from, to) =>
+ supabase
  .from('broadcast_recipients')
  .select('*, contact:contacts(*)')
- .eq('broadcast_id', broadcast.id);
-
- if (recipientsFetchError || !recipients) {
- throw new Error('Failed to fetch broadcast recipients');
- }
+ .eq('broadcast_id', broadcast.id)
+ .order('id')
+ .range(from, to),
+ 'Failed to fetch broadcast recipients',
+ );
 
  // One bulk fetch of custom values for every contact in this
  // broadcast, avoiding N+1 during the send loop.

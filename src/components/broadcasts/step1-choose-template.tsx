@@ -39,7 +39,16 @@ export function Step1ChooseTemplate({ selectedTemplate, onSelect, onNext, onBack
                     .order('created_at', { ascending: false });
 
                 if (fetchError) throw fetchError;
-                if (!cancelled) setTemplates(data ?? []);
+
+                // Only Approved templates can actually be sent — a local
+                // Draft has no Meta counterpart (#132001) and Pending /
+                // Rejected ones are refused upstream. But if nothing is
+                // Approved (e.g. templates never synced because no WABA
+                // ID is configured), fall back to showing everything
+                // rather than presenting a dead-end empty list.
+                const all = data ?? [];
+                const approved = all.filter((t) => t.status === 'Approved');
+                if (!cancelled) setTemplates(approved.length > 0 ? approved : all);
             } catch (err) {
                 if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load templates');
             } finally {
