@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server'
+import { NextResponse, after } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { decrypt, encrypt, isLegacyFormat } from '@/lib/whatsapp/encryption'
 import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api'
@@ -6,6 +6,11 @@ import { normalizePhone, phonesMatch } from '@/lib/whatsapp/phone-utils'
 import { verifyMetaWebhookSignature } from '@/lib/whatsapp/webhook-signature'
 import { runAutomationsForTrigger } from '@/lib/automations/engine'
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
+
+// after()-scheduled webhook processing (media downloads, automation
+// chains) runs within the route's max duration — the platform default
+// can be as low as 10s, which a media-heavy webhook can exceed.
+export const maxDuration = 60
 
 // Lazy-initialized to avoid build-time crash when env vars are missing
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -119,14 +124,16 @@ export async function GET(request: Request) {
  }
 
  if (matchedConfig) {
- // Fire-and-forget GCM upgrade. Safe to run on every subscribe
+ // Post-response GCM upgrade — via after(), since a dangling
+ // promise is killed with the serverless instance once the
+ // challenge response is sent. Safe to run on every subscribe
  // since it's a no-op once the column is already GCM.
  if (isLegacyFormat(matchedConfig.verify_token)) {
- void supabaseAdmin()
+ after(async () => {
+ const { error } = await supabaseAdmin()
  .from('whatsapp_config')
  .update({ verify_token: encrypt(verifyToken) })
  .eq('id', matchedConfig.id)
- .then(({ error }: { error: unknown }) => {
  if (error) {
  console.warn(
  '[webhook] verify_token GCM upgrade failed:',
@@ -177,9 +184,18 @@ export async function POST(request: Request) {
  return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
  }
 
- // Process asynchronously so we can ack Meta within their timeout.
- processWebhook(body).catch((error) => {
+ // Process after the response so we ack Meta within their timeout.
+ // MUST go through after(), not a dangling promise: on serverless
+ // (Vercel), the instance is frozen/killed as soon as the response is
+ // sent, so a fire-and-forget processWebhook() never runs — Meta got
+ // its 200 but no message ever reached the database. after() keeps
+ // the invocation alive until the callback settles.
+ after(async () => {
+ try {
+ await processWebhook(body)
+ } catch (error) {
  console.error('Error processing webhook:', error)
+ }
  })
 
  return NextResponse.json({ status: 'received' }, { status: 200 })
@@ -640,8 +656,14 @@ async function processMessage(
  // listens to only one trigger runs only when that trigger matches.
  if (contactOutcome.wasCreated) automationTriggers.unshift('new_contact_created')
  if (isFirstInboundMessage) automationTriggers.unshift('first_inbound_message')
+ // Awaited (not fire-and-forget): this whole path runs post-response
+ // inside after(), which only keeps the serverless instance alive
+ // until its callback settles — a dangling promise here would be
+ // killed mid-automation. Errors are still isolated per trigger so
+ // one failing automation can't block the others.
  for (const triggerType of automationTriggers) {
- runAutomationsForTrigger({
+ try {
+ await runAutomationsForTrigger({
  userId,
  triggerType,
  contactId: contactRecord.id,
@@ -649,7 +671,10 @@ async function processMessage(
  message_text: inboundText,
  conversation_id: conversation.id,
  },
- }).catch((err) => console.error('[automations] dispatch failed:', err))
+ })
+ } catch (err) {
+ console.error('[automations] dispatch failed:', err)
+ }
  }
 }
 
