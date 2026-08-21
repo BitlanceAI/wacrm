@@ -72,6 +72,18 @@ interface WhatsAppWebhookEntry {
  status: string
  timestamp: string
  recipient_id: string
+ /**
+ * Present on `failed` (and some `sent`) statuses — the actual
+ * reason Meta didn't deliver (e.g. 131049 per-user marketing
+ * limit, 131026 undeliverable). Without capturing this, a
+ * broadcast shows "sent" forever and the drop is untraceable.
+ */
+ errors?: Array<{
+ code: number
+ title?: string
+ message?: string
+ error_data?: { details?: string }
+ }>
  }>
  }
  field: string
@@ -296,7 +308,29 @@ async function handleStatusUpdate(status: {
  status: string
  timestamp: string
  recipient_id: string
+ errors?: Array<{
+ code: number
+ title?: string
+ message?: string
+ error_data?: { details?: string }
+ }>
 }) {
+ // Surface Meta's delivery-failure reason loudly. A wamid on send only
+ // means Meta ACCEPTED the message — the drop reason (per-user
+ // marketing limits #131049, undeliverable #131026, paused template,
+ // …) arrives here, on the failed status, and nowhere else.
+ const errorDetail = (status.errors ?? [])
+ .map(
+ (e) =>
+ `#${e.code} ${e.title ?? e.message ?? ''}${e.error_data?.details ? ` — ${e.error_data.details}` : ''}`.trim(),
+ )
+ .join('; ')
+ if (status.status === 'failed') {
+ console.error(
+ `[webhook] ✗ delivery FAILED  wamid="${status.id}"  recipient="${status.recipient_id}"  reason="${errorDetail || '(Meta sent no error detail)'}"`,
+ )
+ }
+
  // 1) Mirror onto messages (legacy behavior) — Meta's status values
  // already match the CHECK constraint on messages.status.
  const { error: msgErr } = await supabaseAdmin()
@@ -334,6 +368,11 @@ async function handleStatusUpdate(status: {
  if (status.status === 'sent' && !('sent_at' in update)) update.sent_at = tsIso
  if (status.status === 'delivered') update.delivered_at = tsIso
  if (status.status === 'read') update.read_at = tsIso
+ // Persist the failure reason so the broadcast detail page can show
+ // WHY a recipient never got the message, not just that they didn't.
+ if (status.status === 'failed' && errorDetail) {
+ update.error_message = errorDetail
+ }
 
  const { error: recUpdateErr } = await supabaseAdmin()
  .from('broadcast_recipients')
