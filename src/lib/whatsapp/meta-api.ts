@@ -144,6 +144,19 @@ export async function sendTextMessage(
  return { messageId: data.messages[0].id }
 }
 
+/**
+ * Send-time header content. Meta templates fix the header's *shape*
+ * at creation (text-with-variable, image, video, document) but the
+ * actual content — the header variable's value, or the media asset —
+ * must be supplied as a `header` component on every send. Omitting it
+ * for a template that has one fails with error #132012.
+ */
+export interface TemplateHeaderParam {
+ type: 'text' | 'image' | 'video' | 'document'
+ /** Text value for text headers; public https URL for media headers. */
+ value: string
+}
+
 export interface SendTemplateMessageArgs {
  phoneNumberId: string
  accessToken: string
@@ -151,6 +164,8 @@ export interface SendTemplateMessageArgs {
  templateName: string
  language?: string
  params?: string[]
+ /** Required when the template's header has a variable or is media. */
+ header?: TemplateHeaderParam
  /** Meta's message_id of the message being replied to. */
  contextMessageId?: string
 }
@@ -169,6 +184,7 @@ export async function sendTemplateMessage(
  templateName,
  language = 'en_US',
  params,
+ header,
  contextMessageId,
  } = args
  const url = `${META_API_BASE}/${phoneNumberId}/messages`
@@ -178,13 +194,31 @@ export async function sendTemplateMessage(
  language: { code: language },
  }
 
+ const components: Record<string, unknown>[] = []
+
+ if (header) {
+ components.push({
+ type: 'header',
+ parameters: [
+ header.type === 'text'
+ ? { type: 'text', text: header.value }
+ : // Media headers take the asset by public link. (Meta also
+ // accepts a pre-uploaded media `id`; link keeps the caller
+ // contract simple.)
+ { type: header.type, [header.type]: { link: header.value } },
+ ],
+ })
+ }
+
  if (params && params.length > 0) {
- template.components = [
- {
+ components.push({
  type: 'body',
  parameters: params.map((p) => ({ type: 'text', text: String(p) })),
- },
- ]
+ })
+ }
+
+ if (components.length > 0) {
+ template.components = components
  }
 
  const body: Record<string, unknown> = {

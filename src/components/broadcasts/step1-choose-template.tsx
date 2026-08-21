@@ -4,9 +4,10 @@ import { useEffect, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
 import { maybeSyncTemplates } from '@/lib/whatsapp/template-sync';
+import { getTemplateSendBlocker } from '@/lib/whatsapp/template-capabilities';
 import { MessageTemplate } from '@/types';
 import { Button } from '@/components/ui/button';
-import { Loader2, FileText, ArrowRight } from 'lucide-react';
+import { Loader2, FileText, ArrowRight, AlertTriangle } from 'lucide-react';
 
 const categoryColors: Record<string, string> = {
     Marketing: 'bg-purple-500/10 text-purple-400 border-purple-500/20',
@@ -106,12 +107,21 @@ export function Step1ChooseTemplate({ selectedTemplate, onSelect, onNext, onBack
                     {templates.map((template) => {
                         const isSelected = selectedTemplate?.id === template.id;
                         const catColor = categoryColors[template.category] ?? categoryColors.Utility;
+                        // Shapes the send pipeline can't build (media
+                        // header, header variable, named params) are shown
+                        // but not selectable — picking one would only fail
+                        // at send time with Meta error #132012.
+                        const blocker = getTemplateSendBlocker(template);
 
                         return (
                             <button
                                 key={template.id}
-                                onClick={() => onSelect(template)}
-                                className={`flex flex-col gap-3 rounded-xl border p-4 text-left transition-all ${isSelected
+                                onClick={() => !blocker && onSelect(template)}
+                                disabled={!!blocker}
+                                title={blocker ?? undefined}
+                                className={`flex flex-col gap-3 rounded-xl border p-4 text-left transition-all ${blocker
+                                        ? 'cursor-not-allowed border-border bg-background/30 opacity-60'
+                                        : isSelected
                                         ? 'border-primary bg-primary/5 ring-1 ring-primary/30'
                                         : 'border-border bg-background/50 hover:border-border hover:bg-background'
                                     }`}
@@ -134,6 +144,12 @@ export function Step1ChooseTemplate({ selectedTemplate, onSelect, onNext, onBack
                                         </>
                                     )}
                                 </div>
+                                {blocker && (
+                                    <div className="flex items-start gap-1.5 text-[10px] text-amber-500">
+                                        <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+                                        <span>{blocker}</span>
+                                    </div>
+                                )}
                             </button>
                         );
                     })}

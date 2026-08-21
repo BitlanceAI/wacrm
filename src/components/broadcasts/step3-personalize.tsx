@@ -3,9 +3,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { Contact, CustomField, MessageTemplate } from '@/types';
+import { getTemplateHeaderRequirement } from '@/lib/whatsapp/template-capabilities';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { ArrowLeft, ArrowRight, Eye, GripVertical, Loader2, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Eye, GripVertical, Image as ImageIcon, Loader2, X } from 'lucide-react';
 
 type VariableType = 'static' | 'field' | 'custom_field';
 
@@ -18,6 +19,9 @@ interface Step3Props {
     template: MessageTemplate;
     variables: Record<string, VariableMapping>;
     onUpdate: (variables: Record<string, VariableMapping>) => void;
+    /** Send-time header content (media URL or header-variable value). */
+    headerValue: string;
+    onHeaderValueChange: (value: string) => void;
     onNext: () => void;
     onBack: () => void;
 }
@@ -52,9 +56,21 @@ export function Step3Personalize({
     template,
     variables,
     onUpdate,
+    headerValue,
+    onHeaderValueChange,
     onNext,
     onBack,
 }: Step3Props) {
+    // Media headers and header variables need send-time content that
+    // Meta refuses to default — collect it here, one value for the
+    // whole broadcast.
+    const headerRequirement = getTemplateHeaderRequirement(template);
+    const headerMissing =
+        headerRequirement !== null && headerValue.trim() === '';
+    const headerInvalid =
+        headerRequirement?.kind === 'media' &&
+        headerValue.trim() !== '' &&
+        !/^https:\/\//i.test(headerValue.trim());
     const [customFields, setCustomFields] = useState<CustomField[]>([]);
     const [loadingFields, setLoadingFields] = useState(true);
     const [firstContact, setFirstContact] = useState<Contact | null>(null);
@@ -187,6 +203,40 @@ export function Step3Personalize({
                     Drag a field onto each <span className="font-mono text-primary">{'{{variable}}'}</span> slot to map it.
                 </p>
             </div>
+
+            {/* ── Header content (media URL / header variable) ──────── */}
+            {headerRequirement && (
+                <div className="rounded-xl border border-border bg-background/50 p-4 space-y-2">
+                    <div className="flex items-center gap-2">
+                        <ImageIcon className="h-4 w-4 text-primary" />
+                        <p className="text-sm font-medium text-foreground">
+                            {headerRequirement.kind === 'media'
+                                ? `Header ${headerRequirement.mediaType}`
+                                : 'Header variable'}
+                        </p>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                        {headerRequirement.kind === 'media'
+                            ? `This template has a ${headerRequirement.mediaType} header. Paste a public https:// link — Meta downloads it for every recipient.`
+                            : 'This template has a variable in its header. The value below is used for every recipient.'}
+                    </p>
+                    <Input
+                        value={headerValue}
+                        onChange={(e) => onHeaderValueChange(e.target.value)}
+                        placeholder={
+                            headerRequirement.kind === 'media'
+                                ? `https://example.com/header.${headerRequirement.mediaType === 'image' ? 'jpg' : headerRequirement.mediaType === 'video' ? 'mp4' : 'pdf'}`
+                                : 'Header text value'
+                        }
+                        className="border-border bg-accent text-foreground placeholder:text-muted-foreground"
+                    />
+                    {headerInvalid && (
+                        <p className="text-xs text-amber-400">
+                            Must be a public https:// URL — Meta fetches it directly.
+                        </p>
+                    )}
+                </div>
+            )}
 
             {placeholders.length === 0 ? (
                 <div className="rounded-xl border border-border bg-background/50 p-6 text-center">
@@ -391,7 +441,7 @@ export function Step3Personalize({
                 </Button>
                 <Button
                     onClick={onNext}
-                    disabled={unmappedKeys.length > 0}
+                    disabled={unmappedKeys.length > 0 || headerMissing || headerInvalid}
                     className="bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
                 >
                     Next

@@ -1,6 +1,9 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { sendTemplateMessage } from '@/lib/whatsapp/meta-api'
+import {
+  sendTemplateMessage,
+  type TemplateHeaderParam,
+} from '@/lib/whatsapp/meta-api'
 import { decrypt } from '@/lib/whatsapp/encryption'
 import {
   sanitizePhoneForMeta,
@@ -13,6 +16,10 @@ import {
   rateLimitResponse,
   RATE_LIMITS,
 } from '@/lib/rate-limit'
+import {
+  getTemplateSendBlocker,
+  getTemplateHeaderRequirement,
+} from '@/lib/whatsapp/template-capabilities'
 
 interface BroadcastResult {
   phone: string
@@ -95,6 +102,10 @@ export async function POST(request: Request) {
       template_name,
       template_language,
       template_params,
+      // Broadcast-level header content, shared by every recipient:
+      // the text-header variable's value, or a public https URL for
+      // an image/video/document header.
+      header_value,
     } = body
 
     // Normalize to a list of {phone, params} regardless of shape.
@@ -152,7 +163,7 @@ export async function POST(request: Request) {
     // .maybeSingle(), which errors on more than one match.
     let templateQuery = supabase
       .from('message_templates')
-      .select('body_text')
+      .select('body_text, header_type, header_content')
       .eq('user_id', user.id)
       .eq('name', template_name)
     if (template_language) {
@@ -169,6 +180,58 @@ export async function POST(request: Request) {
     console.log(
       `[broadcast] template DB body_text="${templateRow?.body_text?.slice(0, 120) ?? '(not found in DB)'}"  hasPlaceholders=${/\{\{\d+\}\}/.test(templateRow?.body_text ?? '')}  paramsSentPerRecipient=${JSON.stringify(recipients.map(r => ({ phone: r.phone, params: r.params ?? [] })))}`
     )
+
+    // ── Pre-flight template-shape guard ────────────────────────────
+    // Fail the whole request once with an actionable reason instead of
+    // letting Meta reject every recipient with #132012.
+    let templateHeader: TemplateHeaderParam | undefined
+    if (templateRow) {
+      // Named parameters: nothing the caller supplies can fix these.
+      const blocker = getTemplateSendBlocker(templateRow)
+      if (blocker) {
+        console.error(
+          `[broadcast] ✗ BLOCKED  template="${template_name}" unsupported shape: ${blocker}`
+        )
+        return NextResponse.json(
+          { error: blocker, code: 'TEMPLATE_SHAPE_UNSUPPORTED' },
+          { status: 400 }
+        )
+      }
+
+      // Header requirement: Meta wants the header's content (media URL
+      // or text-variable value) on every send — resolve it from
+      // header_value or refuse.
+      const requirement = getTemplateHeaderRequirement(templateRow)
+      if (requirement) {
+        const value = typeof header_value === 'string' ? header_value.trim() : ''
+        if (!value) {
+          const what =
+            requirement.kind === 'media'
+              ? `a public https URL for its ${requirement.mediaType} header`
+              : 'a value for the {{N}} variable in its header'
+          return NextResponse.json(
+            {
+              error: `Template "${template_name}" requires ${what}. Provide it in the personalize step and resend.`,
+              code: 'TEMPLATE_HEADER_REQUIRED',
+            },
+            { status: 400 }
+          )
+        }
+        if (requirement.kind === 'media' && !/^https:\/\//i.test(value)) {
+          return NextResponse.json(
+            {
+              error: `Header ${requirement.mediaType} must be a public https:// URL — Meta fetches it directly and rejects anything else.`,
+              code: 'TEMPLATE_HEADER_INVALID',
+            },
+            { status: 400 }
+          )
+        }
+        templateHeader =
+          requirement.kind === 'media'
+            ? { type: requirement.mediaType, value }
+            : { type: 'text', value }
+      }
+    }
 
     // ── Pre-flight parameter/placeholder guard ─────────────────────
     // The #1 cause of Meta error #132012 ("Parameter format does not
@@ -261,6 +324,7 @@ export async function POST(request: Request) {
             templateName: template_name,
             language: template_language || 'en_US',
             params: recipient.params ?? [],
+            header: templateHeader,
           })
           sentMessageId = result.messageId
           lastError = null

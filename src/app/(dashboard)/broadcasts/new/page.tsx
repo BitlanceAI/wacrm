@@ -40,6 +40,9 @@ export default function NewBroadcastPage() {
  Record<string, { type: 'static' | 'field' | 'custom_field'; value: string }>
  >({});
  const [name, setName] = useState('');
+ // Send-time header content for templates whose header needs it
+ // (media URL or header-variable value); collected in step 3.
+ const [headerValue, setHeaderValue] = useState('');
 
  async function handleSend() {
  if (!template) return;
@@ -56,6 +59,7 @@ export default function NewBroadcastPage() {
  excludeTagIds: audience.excludeTagIds,
  },
  variables,
+ headerValue: headerValue.trim() || undefined,
  });
  router.push(`/broadcasts/${broadcastId}`);
  } catch (err) {
@@ -180,7 +184,12 @@ export default function NewBroadcastPage() {
  {currentStep === 0 && (
  <Step1ChooseTemplate
  selectedTemplate={template}
- onSelect={setTemplate}
+ onSelect={(t) => {
+ setTemplate(t);
+ // Header content is template-specific — don't carry a
+ // previous template's image URL into the new one.
+ setHeaderValue('');
+ }}
  onNext={() => setCurrentStep(1)}
  onBack={() => router.push('/broadcasts')}
  />
@@ -195,6 +204,8 @@ export default function NewBroadcastPage() {
  )}
  {currentStep === 2 && template && (
  <Step3Personalize
+ headerValue={headerValue}
+ onHeaderValueChange={setHeaderValue}
  template={template}
  variables={variables}
  onUpdate={setVariables}

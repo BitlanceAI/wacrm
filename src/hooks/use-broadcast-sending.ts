@@ -38,6 +38,13 @@ interface BroadcastPayload {
  template: MessageTemplate;
  audience: AudienceConfig;
  variables: Record<string, VariableMapping>;
+ /**
+  * Header content shared by every recipient — the text-header
+  * variable's value, or a public https URL for a media header.
+  * Required when the template's header needs send-time content
+  * (see getTemplateHeaderRequirement); the API refuses without it.
+  */
+ headerValue?: string;
 }
 
 interface UseBroadcastSendingReturn {
@@ -566,6 +573,7 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
   recipients: apiRecipients,
   template_name: payload.template.name,
   template_language: payload.template.language ?? 'en_US',
+  header_value: payload.headerValue,
   }),
   });
 
