@@ -65,6 +65,37 @@ export async function verifyPhoneNumber(
  return response.json()
 }
 
+export interface SubscribeWabaArgs {
+ wabaId: string
+ accessToken: string
+}
+
+/**
+ * Subscribe our Meta app to a WhatsApp Business Account's webhooks.
+ *
+ * Setting the callback URL in the Meta app dashboard is only half of
+ * webhook setup — Meta sends events for a WABA only after the app is
+ * subscribed to that specific WABA via POST /{waba_id}/subscribed_apps.
+ * Without this, switching Settings to a number under a new WABA means
+ * inbound messages and status updates silently never arrive: nothing
+ * errors, the inbox just stays empty.
+ *
+ * Idempotent — subscribing an already-subscribed WABA succeeds.
+ */
+export async function subscribeWabaToApp(
+ args: SubscribeWabaArgs
+): Promise<void> {
+ const { wabaId, accessToken } = args
+ const url = `${META_API_BASE}/${wabaId}/subscribed_apps`
+ const response = await fetch(url, {
+ method: 'POST',
+ headers: { Authorization: `Bearer ${accessToken}` },
+ })
+ if (!response.ok) {
+ await throwMetaError(response, `Meta API error: ${response.status}`)
+ }
+}
+
 // ============================================================
 // Sending
 // ============================================================

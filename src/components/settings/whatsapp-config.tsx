@@ -184,6 +184,18 @@ export function WhatsAppConfig() {
  : 'Configuration saved successfully'
  );
 
+ // Receiving is a separate failure mode from connecting: sending can
+ // work while the WABA was never subscribed to our app's webhooks,
+ // which leaves the inbox silently empty. Call it out loudly.
+ if (data.webhook_subscribed === false) {
+ toast.warning('Saved, but incoming messages may not arrive', {
+ description: data.webhook_subscribe_error
+ ? `Webhook subscription failed: ${data.webhook_subscribe_error}`
+ : 'Add your WhatsApp Business Account ID so incoming messages can be subscribed to this app.',
+ duration: 10000,
+ });
+ }
+
  if (user) await fetchConfig(user.id);
 
  // Auto-sync templates from Meta right after connecting, so a newly
@@ -191,7 +203,19 @@ export function WhatsAppConfig() {
  // Best-effort: needs a WABA ID, so surface only a soft hint on failure.
  const sync = await syncTemplates(user?.id);
  if (sync.ok && sync.changed > 0) {
- toast.success(`Synced ${sync.changed} template${sync.changed === 1 ? '' : 's'} from Meta`);
+ const kept = sync.changed - sync.removed;
+ toast.success(
+ `Synced ${kept} template${kept === 1 ? '' : 's'} from Meta`,
+ sync.removed > 0
+ ? {
+ // Switching accounts silently emptying the template list
+ // reads as a bug, so name what was dropped and why.
+ description: `Removed ${sync.removed} template${
+ sync.removed === 1 ? '' : 's'
+ } belonging to the previously connected account.`,
+ }
+ : undefined,
+ );
  } else if (!sync.ok) {
  toast.message('Saved. Templates not auto-synced', {
  description:

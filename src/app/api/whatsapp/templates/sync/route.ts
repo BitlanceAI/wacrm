@@ -27,7 +27,14 @@ import { decrypt } from '@/lib/whatsapp/encryption'
  * see their Pending / Rejected templates and understand why.
  * - Locally-created templates (no Meta counterpart) are NOT deleted —
  * they remain visible so the user can notice drift and clean up
- * manually.
+ * manually. Those are the rows with waba_id IS NULL.
+ * - Rows that DID come from Meta but are absent from this sync ARE
+ * deleted. That is what makes switching WhatsApp accounts work: after
+ * repointing Settings at a different WABA, the old account's templates
+ * would otherwise linger forever in the template manager, the
+ * broadcast composer and the inbox picker — and sending with one fails
+ * at Meta with #132001, because the newly connected account has never
+ * heard of it. Meta is the source of truth for anything it gave us.
  */
 
 const META_API_VERSION = 'v21.0'
@@ -166,6 +173,9 @@ export async function POST() {
  let inserted = 0
  let updated = 0
  const errors: { name: string; language: string; message: string }[] = []
+ // ids we touched this run — everything else that carries a waba_id is
+ // a stray from a previous account (or deleted upstream) and gets pruned.
+ const syncedIds = new Set<string>()
 
  for (const t of metaTemplates) {
  const body = (t.components ?? []).find((c) => c.type === 'BODY')
@@ -174,6 +184,10 @@ export async function POST() {
 
  const row = {
  user_id: user.id,
+ // Stamp the account this came from so a later sync can tell
+ // "belongs to the connected WABA" from "left over from the one
+ // we used to be connected to".
+ waba_id: config.waba_id as string,
  name: t.name,
  category: normalizeCategory(t.category),
  language: t.language,
@@ -215,11 +229,14 @@ export async function POST() {
  })
  } else {
  updated++
+ syncedIds.add(existing.id)
  }
  } else {
- const { error: insErr } = await supabase
+ const { data: insertedRow, error: insErr } = await supabase
  .from('message_templates')
  .insert(row)
+ .select('id')
+ .single()
  if (insErr) {
  errors.push({
  name: t.name,
@@ -228,6 +245,57 @@ export async function POST() {
  })
  } else {
  inserted++
+ if (insertedRow?.id) syncedIds.add(insertedRow.id)
+ }
+ }
+ }
+
+ // Prune templates that Meta no longer vouches for.
+ //
+ // Skipped when any row failed above: syncedIds would be missing rows
+ // we actually meant to keep, and deleting those would be worse than
+ // leaving a stray behind. The next clean sync catches them.
+ //
+ // A row is a stray when we didn't touch it this run AND either:
+ //   - it carries a waba_id (so it came from Meta) — either from the
+ //     account we just switched away from, or deleted upstream; or
+ //   - it predates the waba_id column but claims a Meta-assigned status.
+ //     The template manager only ever inserts status 'Draft', so
+ //     Approved / Pending / Rejected can only have come from a sync.
+ // Hand-made drafts (waba_id NULL, status Draft) are never touched.
+ //
+ // Also skipped on a truncated read: metaTemplates is an incomplete
+ // picture of the account, so "absent from this sync" wouldn't mean
+ // "absent from Meta".
+ const truncated = pageCount >= PAGE_CAP && nextUrl !== null
+ let removed = 0
+ if (errors.length === 0 && !truncated) {
+ const { data: locals, error: scanErr } = await supabase
+ .from('message_templates')
+ .select('id, waba_id, status')
+ .eq('user_id', user.id)
+
+ if (scanErr) {
+ console.error('[templates/sync] stray scan failed:', scanErr.message)
+ } else {
+ const strayIds = (locals ?? [])
+ .filter(
+ (r: { id: string; waba_id: string | null; status: string }) =>
+ !syncedIds.has(r.id) &&
+ (r.waba_id !== null || r.status !== 'Draft'),
+ )
+ .map((r: { id: string }) => r.id)
+
+ if (strayIds.length > 0) {
+ const { error: delErr } = await supabase
+ .from('message_templates')
+ .delete()
+ .in('id', strayIds)
+ if (delErr) {
+ console.error('[templates/sync] stray delete failed:', delErr.message)
+ } else {
+ removed = strayIds.length
+ }
  }
  }
  }
@@ -237,8 +305,9 @@ export async function POST() {
  total: metaTemplates.length,
  inserted,
  updated,
+ removed,
  errors,
- truncated: pageCount >= PAGE_CAP && nextUrl !== null,
+ truncated,
  })
  } catch (error) {
  console.error('Error syncing WhatsApp templates:', error)

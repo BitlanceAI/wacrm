@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { verifyPhoneNumber } from '@/lib/whatsapp/meta-api'
+import { verifyPhoneNumber, subscribeWabaToApp } from '@/lib/whatsapp/meta-api'
 import { encrypt, decrypt } from '@/lib/whatsapp/encryption'
 
 /**
@@ -135,7 +135,7 @@ export async function POST(request: Request) {
  // again every time they change something else (e.g. the WABA ID).
  const { data: existing } = await supabase
  .from('whatsapp_config')
- .select('id, access_token, verify_token')
+ .select('id, access_token, verify_token, waba_id')
  .eq('user_id', user.id)
  .maybeSingle()
 
@@ -198,6 +198,33 @@ export async function POST(request: Request) {
  )
  }
 
+ // Subscribe our app to the WABA's webhooks. Meta only delivers
+ // events for WABAs explicitly subscribed via /subscribed_apps —
+ // the dashboard's callback-URL setup alone is not enough. Skipping
+ // this is why a freshly connected account "works" for sending but
+ // inbound messages never reach the inbox.
+ //
+ // Failure is surfaced but non-fatal: the config is still saved so
+ // the user can send, and the warning tells them receiving is broken.
+ let webhookSubscribed = false
+ let webhookSubscribeError: string | null = null
+ if (waba_id) {
+ try {
+ await subscribeWabaToApp({
+ wabaId: waba_id,
+ accessToken: accessTokenPlain,
+ })
+ webhookSubscribed = true
+ } catch (err) {
+ webhookSubscribeError =
+ err instanceof Error ? err.message : 'Unknown Meta API error'
+ console.warn(
+ '[whatsapp/config POST] WABA webhook subscription failed:',
+ webhookSubscribeError
+ )
+ }
+ }
+
  // Resolve the verify token the same way: only overwrite it when a new
  // value is supplied, otherwise keep whatever is already stored.
  let encryptedVerifyToken: string | null
@@ -237,6 +264,34 @@ export async function POST(request: Request) {
  { status: 500 }
  )
  }
+
+ // Repointed at a different WhatsApp Business Account? The cached
+ // templates belong to the old one. Drop them here rather than
+ // waiting on the follow-up sync: the templates the user sees must
+ // never outlive the account that issued them, and a sync that fails
+ // (bad token, WABA ID typo) would otherwise leave the old account's
+ // catalog on screen — pickable, and guaranteed to fail at Meta.
+ //
+ // Only Meta-derived rows go: anything stamped with the old waba_id,
+ // plus pre-waba_id rows carrying a Meta-assigned status (the
+ // template manager only ever writes 'Draft'). Hand-made drafts stay.
+ if (existing.waba_id && existing.waba_id !== (waba_id || null)) {
+ const { error: pruneError } = await supabase
+ .from('message_templates')
+ .delete()
+ .eq('user_id', user.id)
+ .or(
+ `waba_id.eq.${existing.waba_id},and(waba_id.is.null,status.neq.Draft)`
+ )
+
+ if (pruneError) {
+ // Non-fatal: the config itself saved. The next sync prunes.
+ console.warn(
+ '[whatsapp/config POST] Failed to clear templates from previous WABA:',
+ pruneError.message
+ )
+ }
+ }
  } else {
  const { error: insertError } = await supabase
  .from('whatsapp_config')
@@ -259,7 +314,15 @@ export async function POST(request: Request) {
  }
  }
 
- return NextResponse.json({ success: true, phone_info: phoneInfo })
+ return NextResponse.json({
+ success: true,
+ phone_info: phoneInfo,
+ // Receiving-side health: false + reason when the WABA couldn't be
+ // subscribed to our app's webhooks (inbound messages won't arrive),
+ // false + null when no WABA ID was provided to subscribe with.
+ webhook_subscribed: webhookSubscribed,
+ webhook_subscribe_error: webhookSubscribeError,
+ })
  } catch (error) {
  console.error('Error in WhatsApp config POST:', error)
  return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

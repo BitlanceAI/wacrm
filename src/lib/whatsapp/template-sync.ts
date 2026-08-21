@@ -19,8 +19,10 @@ function keyFor(userId?: string): string {
 
 export interface TemplateSyncResult {
   ok: boolean
-  /** inserted + updated rows on success */
+  /** inserted + updated + removed rows on success */
   changed: number
+  /** rows dropped because Meta no longer has them (e.g. after an account switch) */
+  removed: number
   error?: string
 }
 
@@ -37,6 +39,7 @@ export async function syncTemplates(userId?: string): Promise<TemplateSyncResult
       return {
         ok: false,
         changed: 0,
+        removed: 0,
         error:
           (typeof data.error === 'string' && data.error) ||
           `Sync failed (${res.status})`,
@@ -45,13 +48,18 @@ export async function syncTemplates(userId?: string): Promise<TemplateSyncResult
 
     const inserted = typeof data.inserted === 'number' ? data.inserted : 0
     const updated = typeof data.updated === 'number' ? data.updated : 0
+    // Removals count as a change: after a WhatsApp account switch the
+    // only thing that happens may be the old account's templates being
+    // pruned, and callers still need to refetch to drop them from view.
+    const removed = typeof data.removed === 'number' ? data.removed : 0
     // Mark fresh so an on-open stale check won't immediately re-fire.
     stampSynced(userId)
-    return { ok: true, changed: inserted + updated }
+    return { ok: true, changed: inserted + updated + removed, removed }
   } catch (err) {
     return {
       ok: false,
       changed: 0,
+      removed: 0,
       error: err instanceof Error ? err.message : 'Sync request failed',
     }
   }

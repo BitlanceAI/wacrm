@@ -205,11 +205,17 @@ export function TemplateManager() {
  if (!res.ok) {
  throw new Error(data?.error || `Sync failed (HTTP ${res.status})`);
  }
+ const detail = [
+ data.inserted ? `${data.inserted} new` : null,
+ data.updated ? `${data.updated} updated` : null,
+ // Called out explicitly: removals are usually the previous
+ // WhatsApp account's templates disappearing after a config
+ // change, and a silent drop looks like data loss.
+ data.removed ? `${data.removed} removed` : null,
+ ].filter(Boolean);
  toast.success(
  `Synced ${data.total} template${data.total === 1 ? '' : 's'} from Meta` +
- (data.inserted || data.updated
- ? ` (${data.inserted} new, ${data.updated} updated)`
- : ''),
+ (detail.length ? ` (${detail.join(', ')})` : ''),
  );
  if (Array.isArray(data.errors) && data.errors.length > 0) {
  // Surface per-template failures so users don't trust a green
