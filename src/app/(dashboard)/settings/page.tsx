@@ -1,22 +1,19 @@
 'use client';
 
+import { useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Settings, MessageSquare, Tag, User, Palette } from 'lucide-react';
+import { Settings, Tag, User } from 'lucide-react';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { WhatsAppConfig } from '@/components/settings/whatsapp-config';
-import { TemplateManager } from '@/components/settings/template-manager';
 import { TagManager } from '@/components/settings/tag-manager';
 import { ProfileForm } from '@/components/settings/profile-form';
 import { PasswordForm } from '@/components/settings/password-form';
 import { SessionsCard } from '@/components/settings/sessions-card';
-import { AppearancePanel } from '@/components/settings/appearance-panel';
 
 const TAB_VALUES = [
  'profile',
  'whatsapp',
- 'templates',
  'tags',
- 'appearance',
 ] as const;
 type TabValue = (typeof TAB_VALUES)[number];
 
@@ -35,6 +32,12 @@ export default function SettingsPage() {
  const queryTab = searchParams.get('tab');
  const tab: TabValue = isTabValue(queryTab) ? queryTab : 'profile';
 
+ // Templates moved to their own sidebar page. Old links (and older
+ // error messages saying "Settings → Templates") still resolve.
+ useEffect(() => {
+ if (queryTab === 'templates') router.replace('/templates');
+ }, [queryTab, router]);
+
  const onChange = (next: TabValue) => {
  const params = new URLSearchParams(searchParams.toString());
  params.set('tab', next);
@@ -46,8 +49,8 @@ export default function SettingsPage() {
  <div>
  <h1 className="text-2xl font-bold text-foreground">Settings</h1>
  <p className="text-sm text-muted-foreground mt-1">
- Manage your profile, WhatsApp® integration, message templates, and
- tags.
+ Manage your profile, WhatsApp® integration, and tags. Message
+ templates now live in the sidebar under Templates.
  </p>
  </div>
 
@@ -68,25 +71,11 @@ export default function SettingsPage() {
  WhatsApp Config
  </TabsTrigger>
  <TabsTrigger
- value="templates"
- className="data-active:bg-accent data-active:text-primary text-muted-foreground"
- >
- <MessageSquare className="size-4" />
- Templates
- </TabsTrigger>
- <TabsTrigger
  value="tags"
  className="data-active:bg-accent data-active:text-primary text-muted-foreground"
  >
  <Tag className="size-4" />
  Tags
- </TabsTrigger>
- <TabsTrigger
- value="appearance"
- className="data-active:bg-accent data-active:text-primary text-muted-foreground"
- >
- <Palette className="size-4" />
- Appearance
  </TabsTrigger>
  </TabsList>
 
@@ -100,16 +89,8 @@ export default function SettingsPage() {
  <WhatsAppConfig />
  </TabsContent>
 
- <TabsContent value="templates">
- <TemplateManager />
- </TabsContent>
-
  <TabsContent value="tags">
  <TagManager />
- </TabsContent>
-
- <TabsContent value="appearance">
- <AppearancePanel />
  </TabsContent>
  </Tabs>
  </div>

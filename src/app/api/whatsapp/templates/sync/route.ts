@@ -6,7 +6,7 @@ import { decrypt } from '@/lib/whatsapp/encryption'
  * Sync message templates from Meta → local message_templates table.
  *
  * Why this exists:
- * The Settings → Message Templates UI only writes to Supabase. It does
+ * The Templates page UI only writes to Supabase. It does
  * NOT submit templates for approval to Meta. Users would create a
  * template locally, try to broadcast with it, and hit Meta's error
  * #132001 "Template name does not exist in the translation" — because

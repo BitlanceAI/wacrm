@@ -158,7 +158,7 @@ export function TemplatePicker({
  <p className="text-sm text-foreground">No approved templates</p>
  <p className="mt-1 text-xs text-muted-foreground">
  Approve a template in Meta WhatsApp Manager, then sync it
- from Settings → Templates.
+ from the Templates page.
  </p>
  </div>
  ) : (

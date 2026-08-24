@@ -2,35 +2,15 @@
 
 import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
-import { Plus, Trash2, Loader2, RefreshCw } from 'lucide-react';
+import { Plus, Trash2, Loader2, RefreshCw, ExternalLink } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
 import { maybeSyncTemplates } from '@/lib/whatsapp/template-sync';
+import { TemplateBuilder } from '@/components/settings/template-builder';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
-import {
- Dialog,
- DialogContent,
- DialogHeader,
- DialogTitle,
- DialogDescription,
- DialogFooter,
-} from '@/components/ui/dialog';
-import {
- Select,
- SelectContent,
- SelectItem,
- SelectTrigger,
- SelectValue,
-} from '@/components/ui/select';
+import { Card, CardContent } from '@/components/ui/card';
 import type { MessageTemplate } from '@/types';
-
-const CATEGORIES = ['Marketing', 'Utility', 'Authentication'] as const;
-const HEADER_TYPES = ['text', 'image', 'video', 'document'] as const;
 
 const categoryColors: Record<string, string> = {
  Marketing: 'bg-purple-600/20 text-purple-400 border-purple-600/30',
@@ -45,52 +25,6 @@ const statusColors: Record<string, string> = {
  Rejected: 'bg-red-600/20 text-red-400 border-red-600/30',
 };
 
-interface TemplateFormData {
- name: string;
- category: MessageTemplate['category'];
- language: string;
- body_text: string;
- header_type: string;
- footer_text: string;
-}
-
-// Meta's language codes are exact — "en" and "en_US" are distinct and a
-// template approved under one will be rejected if you send with the other
-// (Graph API error #132001 "Template name does not exist in the
-// translation"). Default to en_US to match the DB default on
-// message_templates.language and the broadcasts sender's fallback.
-const emptyForm: TemplateFormData = {
- name: '',
- category: 'Marketing',
- language: 'en_US',
- body_text: '',
- header_type: '',
- footer_text: '',
-};
-
-// Common Meta template language codes. The field still accepts any
-// string — this just offers autocomplete for the usual suspects. Full
-// list: https://developers.facebook.com/docs/whatsapp/api/messages/message-templates#supported-languages
-const COMMON_LANGUAGE_CODES = [
- 'en_US',
- 'en_GB',
- 'en',
- 'es',
- 'es_ES',
- 'es_MX',
- 'fr',
- 'fr_FR',
- 'de',
- 'it',
- 'pt_BR',
- 'pt_PT',
- 'nl',
- 'pl',
- 'ru',
- 'tr',
- 'lt',
-];
-
 export function TemplateManager() {
  const supabase = createClient();
  const { user, loading: authLoading } = useAuth();
@@ -98,9 +32,11 @@ export function TemplateManager() {
  const [loading, setLoading] = useState(true);
  const [templates, setTemplates] = useState<MessageTemplate[]>([]);
  const [dialogOpen, setDialogOpen] = useState(false);
- const [saving, setSaving] = useState(false);
  const [syncing, setSyncing] = useState(false);
- const [form, setForm] = useState<TemplateFormData>(emptyForm);
+ // WABA id of the connected account — powers the "Manage on Meta"
+ // deep link into WhatsApp Manager's template editor. Null until
+ // loaded (or when no WABA is configured), which hides the button.
+ const [wabaId, setWabaId] = useState<string | null>(null);
 
  useEffect(() => {
  if (authLoading) return;
@@ -109,6 +45,13 @@ export function TemplateManager() {
  return;
  }
  fetchTemplates(user.id);
+ // Best-effort: resolve the WABA id for the Meta deep link.
+ supabase
+ .from('whatsapp_config')
+ .select('waba_id')
+ .eq('user_id', user.id)
+ .maybeSingle()
+ .then(({ data }) => setWabaId(data?.waba_id ?? null));
  // Background: if the cached copy is stale, pull fresh templates from
  // Meta and refetch so newly-approved templates appear on their own.
  maybeSyncTemplates(user.id).then((changed) => {
@@ -134,57 +77,6 @@ export function TemplateManager() {
  toast.error('Failed to load templates');
  } finally {
  setLoading(false);
- }
- }
-
- async function handleSave() {
- if (!form.name.trim()) {
- toast.error('Template name is required');
- return;
- }
- if (!form.body_text.trim()) {
- toast.error('Body text is required');
- return;
- }
-
- try {
- setSaving(true);
- if (!user) {
- toast.error('Not authenticated');
- return;
- }
-
- const payload = {
- user_id: user.id,
- name: form.name.trim(),
- category: form.category,
- language: form.language.trim() || 'en_US',
- body_text: form.body_text.trim(),
- // "none" is the UI sentinel for "no header"; the DB CHECK only allows
- // text/image/video/document or NULL, so map it (and empty) to null.
- header_type:
- form.header_type && form.header_type !== 'none'
- ? form.header_type
- : null,
- footer_text: form.footer_text.trim() || null,
- status: 'Draft' as const,
- };
-
- const { error } = await supabase
- .from('message_templates')
- .insert(payload);
-
- if (error) throw error;
-
- toast.success('Template created successfully');
- setDialogOpen(false);
- setForm(emptyForm);
- if (user) await fetchTemplates(user.id);
- } catch (err) {
- console.error('Save error:', err);
- toast.error('Failed to create template');
- } finally {
- setSaving(false);
  }
  }
 
@@ -293,15 +185,29 @@ export function TemplateManager() {
  {syncing ? 'Syncing…' : 'Sync from Meta'}
  </Button>
  <Button
- onClick={() => {
- setForm(emptyForm);
- setDialogOpen(true);
- }}
+ onClick={() => setDialogOpen(true)}
  className="bg-primary hover:bg-primary/90 text-primary-foreground"
  >
  <Plus className="size-4" />
  New Template
  </Button>
+ {wabaId && (
+ <Button
+ variant="outline"
+ onClick={() =>
+ window.open(
+ `https://business.facebook.com/wa/manage/message-templates/?waba_id=${encodeURIComponent(wabaId)}`,
+ '_blank',
+ 'noopener,noreferrer'
+ )
+ }
+ className="border-border bg-transparent text-foreground hover:bg-accent"
+ title="Open WhatsApp Manager to create or edit templates for approval, then Sync from Meta to pull them in"
+ >
+ Manage Templates on Meta
+ <ExternalLink className="size-4" />
+ </Button>
+ )}
  </div>
  </div>
 
@@ -353,140 +259,15 @@ export function TemplateManager() {
  </div>
  )}
 
- {/* New Template Dialog */}
- <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
- <DialogContent className="bg-background border-border sm:max-w-lg">
- <DialogHeader>
- <DialogTitle className="text-foreground">New Message Template</DialogTitle>
- <DialogDescription className="text-muted-foreground">
- Create a new WhatsApp message template.
- </DialogDescription>
- </DialogHeader>
-
- <div className="space-y-4 py-2">
- <div className="space-y-2">
- <Label className="text-foreground">Template Name</Label>
- <Input
- placeholder="e.g. order_confirmation"
- value={form.name}
- onChange={(e) => setForm({ ...form, name: e.target.value })}
- className="bg-accent border-border text-foreground placeholder:text-muted-foreground"
+ {/* Template builder — submits to Meta for review */}
+ <TemplateBuilder
+ open={dialogOpen}
+ onOpenChange={setDialogOpen}
+ wabaId={wabaId}
+ onCreated={() => {
+ if (user) fetchTemplates(user.id);
+ }}
  />
- </div>
-
- <div className="grid grid-cols-2 gap-4">
- <div className="space-y-2">
- <Label className="text-foreground">Category</Label>
- <Select
- value={form.category}
- onValueChange={(val) =>
- setForm({ ...form, category: val as MessageTemplate['category'] })
- }
- >
- <SelectTrigger className="w-full bg-accent border-border text-foreground">
- <SelectValue />
- </SelectTrigger>
- <SelectContent className="bg-accent border-border">
- {CATEGORIES.map((cat) => (
- <SelectItem key={cat} value={cat} className="text-foreground focus:bg-muted focus:text-foreground">
- {cat}
- </SelectItem>
- ))}
- </SelectContent>
- </Select>
- </div>
-
- <div className="space-y-2">
- <Label className="text-foreground">Language</Label>
- <Input
- list="template-language-codes"
- placeholder="en_US"
- value={form.language}
- onChange={(e) => setForm({ ...form, language: e.target.value })}
- className="bg-accent border-border text-foreground placeholder:text-muted-foreground"
- />
- <datalist id="template-language-codes">
- {COMMON_LANGUAGE_CODES.map((code) => (
- <option key={code} value={code} />
- ))}
- </datalist>
- <p className="text-[11px] text-muted-foreground">
- Must match the exact language code the template is approved
- under on Meta — e.g. <code>en_US</code> and <code>en</code>{' '}
- are distinct.
- </p>
- </div>
- </div>
-
- <div className="space-y-2">
- <Label className="text-foreground">Header Type</Label>
- <Select
- value={form.header_type}
- onValueChange={(val) => setForm({ ...form, header_type: val || '' })}
- >
- <SelectTrigger className="w-full bg-accent border-border text-foreground">
- <SelectValue placeholder="None" />
- </SelectTrigger>
- <SelectContent className="bg-accent border-border">
- <SelectItem value="none" className="text-foreground focus:bg-muted focus:text-foreground">
- None
- </SelectItem>
- {HEADER_TYPES.map((type) => (
- <SelectItem key={type} value={type} className="text-foreground focus:bg-muted focus:text-foreground">
- {type.charAt(0).toUpperCase() + type.slice(1)}
- </SelectItem>
- ))}
- </SelectContent>
- </Select>
- </div>
-
- <div className="space-y-2">
- <Label className="text-foreground">Body Text</Label>
- <Textarea
- placeholder="Enter your template message body. Use {{1}}, {{2}} for variables."
- value={form.body_text}
- onChange={(e) => setForm({ ...form, body_text: e.target.value })}
- rows={4}
- className="bg-accent border-border text-foreground placeholder:text-muted-foreground resize-none"
- />
- </div>
-
- <div className="space-y-2">
- <Label className="text-foreground">Footer Text</Label>
- <Input
- placeholder="Optional footer text"
- value={form.footer_text}
- onChange={(e) => setForm({ ...form, footer_text: e.target.value })}
- className="bg-accent border-border text-foreground placeholder:text-muted-foreground"
- />
- </div>
- </div>
-
- <DialogFooter className="bg-background border-border">
- <Button
- variant="outline"
- onClick={() => setDialogOpen(false)}
- className="border-border text-foreground hover:bg-accent"
- >
- Cancel
- </Button>
- <Button
- onClick={handleSave}
- disabled={saving}
- className="bg-primary hover:bg-primary/90 text-primary-foreground"
- >
- {saving ? (
- <>
- <Loader2 className="size-4 animate-spin" />
- Creating...
- </>
- ) : (
- 'Create Template'
- )}
- </Button>
- </DialogFooter>
- </DialogContent>
- </Dialog>
  </div>
  );
 }

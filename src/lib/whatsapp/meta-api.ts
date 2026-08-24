@@ -39,6 +39,252 @@ async function throwMetaError(response: Response, fallback: string): Promise<nev
 }
 
 // ============================================================
+// Template creation
+// ============================================================
+
+export interface CreateTemplateButton {
+ type: 'QUICK_REPLY' | 'URL' | 'PHONE_NUMBER' | 'COPY_CODE'
+ text?: string
+ url?: string
+ phone_number?: string
+ /** Sample values for dynamic URL suffix / copy-code. */
+ example?: string[] | string
+}
+
+export interface CreateMessageTemplateArgs {
+ wabaId: string
+ accessToken: string
+ name: string
+ language: string
+ category: 'MARKETING' | 'UTILITY'
+ bodyText: string
+ /** Sample value per {{N}} body placeholder, in order. */
+ bodyExamples?: string[]
+ headerType?: 'text' | 'image' | 'video' | 'document' | null
+ /** Text headers: the header line (may contain one {{1}}). */
+ headerText?: string
+ /** Text headers with a variable: sample value for {{1}}. */
+ headerTextExample?: string
+ /** Media headers: upload handle from uploadTemplateHeaderMedia(). */
+ headerHandle?: string
+ footerText?: string
+ buttons?: CreateTemplateButton[]
+}
+
+/**
+ * Submit a template to Meta for review (POST /{waba_id}/message_templates).
+ * Returns Meta's template id and initial status (usually PENDING).
+ *
+ * Meta requires an example for every variable — template review is done
+ * by humans/classifiers looking at a rendered sample — and a header
+ * media *handle* (from the Resumable Upload API, not a phone media id)
+ * for image/video/document headers.
+ */
+export async function createMessageTemplate(
+ args: CreateMessageTemplateArgs
+): Promise<{ id: string; status: string; category: string }> {
+ const {
+ wabaId,
+ accessToken,
+ name,
+ language,
+ category,
+ bodyText,
+ bodyExamples,
+ headerType,
+ headerText,
+ headerTextExample,
+ headerHandle,
+ footerText,
+ buttons,
+ } = args
+
+ const components: Record<string, unknown>[] = []
+
+ if (headerType === 'text' && headerText) {
+ const header: Record<string, unknown> = {
+ type: 'HEADER',
+ format: 'TEXT',
+ text: headerText,
+ }
+ if (headerTextExample) {
+ header.example = { header_text: [headerTextExample] }
+ }
+ components.push(header)
+ } else if (
+ (headerType === 'image' || headerType === 'video' || headerType === 'document') &&
+ headerHandle
+ ) {
+ components.push({
+ type: 'HEADER',
+ format: headerType.toUpperCase(),
+ example: { header_handle: [headerHandle] },
+ })
+ }
+
+ const body: Record<string, unknown> = { type: 'BODY', text: bodyText }
+ if (bodyExamples && bodyExamples.length > 0) {
+ body.example = { body_text: [bodyExamples] }
+ }
+ components.push(body)
+
+ if (footerText) {
+ components.push({ type: 'FOOTER', text: footerText })
+ }
+
+ if (buttons && buttons.length > 0) {
+ components.push({
+ type: 'BUTTONS',
+ buttons: buttons.map((b) => {
+ const btn: Record<string, unknown> = { type: b.type }
+ if (b.text) btn.text = b.text
+ if (b.url) btn.url = b.url
+ if (b.phone_number) btn.phone_number = b.phone_number
+ if (b.example) btn.example = b.example
+ return btn
+ }),
+ })
+ }
+
+ const response = await fetch(`${META_API_BASE}/${wabaId}/message_templates`, {
+ method: 'POST',
+ headers: {
+ 'Content-Type': 'application/json',
+ Authorization: `Bearer ${accessToken}`,
+ },
+ body: JSON.stringify({ name, language, category, components }),
+ })
+ if (!response.ok) {
+ await throwMetaError(response, `Meta API error: ${response.status}`)
+ }
+ return response.json()
+}
+
+export interface UploadTemplateHeaderMediaArgs {
+ appId: string
+ accessToken: string
+ fileName: string
+ fileType: string
+ data: ArrayBuffer
+}
+
+/**
+ * Resumable Upload API: turn a media file into the `h:...` handle that
+ * template creation requires for image/video/document header examples.
+ * (Distinct from POST /{phone_id}/media, whose ids Meta refuses here.)
+ */
+export async function uploadTemplateHeaderMedia(
+ args: UploadTemplateHeaderMediaArgs
+): Promise<{ handle: string }> {
+ const { appId, accessToken, fileName, fileType, data } = args
+
+ const sessionRes = await fetch(
+ `${META_API_BASE}/${appId}/uploads` +
+ `?file_name=${encodeURIComponent(fileName)}` +
+ `&file_length=${data.byteLength}` +
+ `&file_type=${encodeURIComponent(fileType)}`,
+ {
+ method: 'POST',
+ headers: { Authorization: `Bearer ${accessToken}` },
+ }
+ )
+ if (!sessionRes.ok) {
+ await throwMetaError(sessionRes, `Meta API error: ${sessionRes.status}`)
+ }
+ const session = (await sessionRes.json()) as { id?: string }
+ if (!session.id) {
+ throw new Error('Meta returned no upload session id')
+ }
+
+ // Session id already looks like "upload:XXXX" — it is its own path.
+ const uploadRes = await fetch(`https://graph.facebook.com/${session.id}`, {
+ method: 'POST',
+ headers: {
+ // Yes, OAuth — the upload endpoint rejects the Bearer scheme.
+ Authorization: `OAuth ${accessToken}`,
+ file_offset: '0',
+ },
+ body: data,
+ })
+ if (!uploadRes.ok) {
+ await throwMetaError(uploadRes, `Meta API error: ${uploadRes.status}`)
+ }
+ const uploaded = (await uploadRes.json()) as { h?: string }
+ if (!uploaded.h) {
+ throw new Error('Meta returned no media handle from the upload')
+ }
+ return { handle: uploaded.h }
+}
+
+// ============================================================
+// Embedded Signup
+// ============================================================
+
+export interface ExchangeEmbeddedSignupCodeArgs {
+ /** One-time code from FB.login's authResponse (response_type 'code'). */
+ code: string
+ appId: string
+ appSecret: string
+}
+
+/**
+ * Exchange the Embedded Signup authorization code for a business
+ * integration system-user access token scoped to the WABA the client
+ * just shared with our app. This token doesn't expire and is what we
+ * store (encrypted) as the tenant's access_token.
+ */
+export async function exchangeEmbeddedSignupCode(
+ args: ExchangeEmbeddedSignupCodeArgs
+): Promise<{ accessToken: string }> {
+ const { code, appId, appSecret } = args
+ const url =
+ `${META_API_BASE}/oauth/access_token` +
+ `?client_id=${encodeURIComponent(appId)}` +
+ `&client_secret=${encodeURIComponent(appSecret)}` +
+ `&code=${encodeURIComponent(code)}`
+ const response = await fetch(url)
+ if (!response.ok) {
+ await throwMetaError(response, `Meta API error: ${response.status}`)
+ }
+ const data = (await response.json()) as { access_token?: string }
+ if (!data.access_token) {
+ throw new Error('Meta returned no access_token for the signup code')
+ }
+ return { accessToken: data.access_token }
+}
+
+export interface RegisterPhoneNumberArgs {
+ phoneNumberId: string
+ accessToken: string
+ /** Six-digit two-step verification PIN. */
+ pin: string
+}
+
+/**
+ * Register a phone number for Cloud API messaging. Numbers onboarded
+ * through Embedded Signup are NOT registered automatically — sends
+ * fail until this is called once. Registering an already-registered
+ * number is a no-op success, so callers can invoke it unconditionally.
+ */
+export async function registerPhoneNumber(
+ args: RegisterPhoneNumberArgs
+): Promise<void> {
+ const { phoneNumberId, accessToken, pin } = args
+ const url = `${META_API_BASE}/${phoneNumberId}/register`
+ const response = await fetch(url, {
+ method: 'POST',
+ headers: {
+ 'Content-Type': 'application/json',
+ Authorization: `Bearer ${accessToken}`,
+ },
+ body: JSON.stringify({ messaging_product: 'whatsapp', pin }),
+ })
+ if (!response.ok) {
+ await throwMetaError(response, `Meta API error: ${response.status}`)
+ }
+}
+
+// ============================================================
 // Phone number / account
 // ============================================================
 

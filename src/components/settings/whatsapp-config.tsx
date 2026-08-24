@@ -29,6 +29,7 @@ import {
 } from '@/components/ui/accordion';
 import type { WhatsAppConfig as WhatsAppConfigType } from '@/types';
 import { syncTemplates } from '@/lib/whatsapp/template-sync';
+import { launchEmbeddedSignup } from '@/lib/whatsapp/embedded-signup';
 
 const MASKED_TOKEN = '••••••••••••••••';
 
@@ -130,6 +131,77 @@ export function WhatsAppConfig() {
  }
  fetchConfig(user.id);
  }, [authLoading, user, fetchConfig]);
+
+ // Embedded Signup: available only when the operator has configured
+ // the Meta app id + a Facebook Login for Business config id. Falls
+ // back to the manual credential form below otherwise.
+ const esAppId = process.env.NEXT_PUBLIC_META_APP_ID;
+ const esConfigId = process.env.NEXT_PUBLIC_META_CONFIG_ID;
+ const embeddedSignupAvailable = Boolean(esAppId && esConfigId);
+ const [signingUp, setSigningUp] = useState(false);
+
+ async function handleEmbeddedSignup() {
+ if (!esAppId || !esConfigId) return;
+ setSigningUp(true);
+ try {
+ const result = await launchEmbeddedSignup({
+ appId: esAppId,
+ configId: esConfigId,
+ });
+
+ const res = await fetch('/api/whatsapp/embedded-signup', {
+ method: 'POST',
+ headers: { 'Content-Type': 'application/json' },
+ body: JSON.stringify({
+ code: result.code,
+ phone_number_id: result.phoneNumberId,
+ waba_id: result.wabaId,
+ }),
+ });
+ const data = await res.json();
+ if (!res.ok) {
+ toast.error(data.error || 'Embedded signup failed');
+ return;
+ }
+
+ toast.success(
+ data.phone_info?.verified_name
+ ? `Connected to ${data.phone_info.verified_name}`
+ : 'WhatsApp account connected'
+ );
+ if (data.registered === false) {
+ toast.warning('Number not registered for messaging yet', {
+ description: data.register_error
+ ? `Meta said: ${data.register_error}. If this number used two-step verification before, re-register it with its existing PIN in WhatsApp Manager.`
+ : undefined,
+ duration: 12000,
+ });
+ }
+ if (data.webhook_subscribed === false) {
+ toast.warning('Connected, but incoming messages may not arrive', {
+ description: data.webhook_subscribe_error ?? undefined,
+ duration: 10000,
+ });
+ }
+
+ // Pull the new account's templates right away, same as a manual
+ // save. Removals = the previous account's templates being pruned.
+ const sync = await syncTemplates(user?.id);
+ if (sync.ok && sync.changed > 0) {
+ const kept = sync.changed - sync.removed;
+ toast.success(`Synced ${kept} template${kept === 1 ? '' : 's'} from Meta`);
+ }
+
+ if (user) await fetchConfig(user.id);
+ } catch (err) {
+ // Cancelling the popup lands here too — keep it quiet-ish.
+ const message =
+ err instanceof Error ? err.message : 'Embedded signup failed';
+ toast.error(message);
+ } finally {
+ setSigningUp(false);
+ }
+ }
 
  async function handleSave() {
  if (!phoneNumberId.trim()) {
@@ -368,6 +440,34 @@ export function WhatsAppConfig() {
  'Configure your Meta API credentials below to connect your WhatsApp Business account.'}
  </AlertDescription>
  </Alert>
+
+ {/* Embedded Signup — the guided path. One click, Meta's popup
+ walks the user through creating/sharing a WABA, and the server
+ wires token + registration + webhooks automatically. */}
+ {embeddedSignupAvailable && (
+ <Card className="bg-background border-border ring-0 ring-transparent">
+ <CardHeader>
+ <CardTitle className="text-foreground">Connect with Facebook</CardTitle>
+ <CardDescription className="text-muted-foreground">
+ The fastest way to connect: log in with Facebook and follow
+ Meta&apos;s guided setup. No tokens or IDs to copy — everything
+ below is filled in automatically.
+ </CardDescription>
+ </CardHeader>
+ <CardContent>
+ <Button
+ onClick={handleEmbeddedSignup}
+ disabled={signingUp}
+ className="bg-[#1877F2] text-white hover:bg-[#1877F2]/90 disabled:opacity-50"
+ >
+ {signingUp ? 'Waiting for Meta…' : 'Connect WhatsApp via Facebook'}
+ </Button>
+ <p className="mt-2 text-xs text-muted-foreground">
+ Prefer manual setup? Use the API credentials form below instead.
+ </p>
+ </CardContent>
+ </Card>
+ )}
 
  {/* API Credentials */}
  <Card className="bg-background border-border ring-0 ring-transparent">

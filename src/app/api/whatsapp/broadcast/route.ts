@@ -65,7 +65,7 @@ interface NewRecipient {
 function friendlyMetaError(raw: string | null): string {
   if (!raw) return 'Unknown error'
   if (raw.includes('132012') || raw.includes('132000')) {
-    return `${raw} — the parameters sent don't match the template's variables on Meta. Sync your templates (Settings → Templates → Sync) so the stored copy matches Meta, then rebuild and resend the broadcast.`
+    return `${raw} — the parameters sent don't match the template's variables on Meta. Sync your templates (Templates → Sync from Meta) so the stored copy matches Meta, then rebuild and resend the broadcast.`
   }
   if (raw.includes('132001')) {
     return `${raw} — Meta has no approved template with this name and language. Verify the template name/language, or sync templates from Meta.`
@@ -266,7 +266,7 @@ export async function POST(request: Request) {
           {
             error:
               expectedParamCount === 0
-                ? `Template "${template_name}" has no {{1}}-style variables in its stored body, but ${mismatched.length} of ${recipients.length} recipient(s) were given parameter values. If the real template on Meta actually has variables, sync your templates (Settings → Templates → Sync) so the stored copy matches Meta, then rebuild the broadcast.`
+                ? `Template "${template_name}" has no {{1}}-style variables in its stored body, but ${mismatched.length} of ${recipients.length} recipient(s) were given parameter values. If the real template on Meta actually has variables, sync your templates (Templates → Sync from Meta) so the stored copy matches Meta, then rebuild the broadcast.`
                 : `Template "${template_name}" expects ${expectedParamCount} variable value(s) per recipient, but ${mismatched.length} of ${recipients.length} recipient(s) supplied a different number. Map every {{N}} placeholder in the personalize step so each recipient has exactly ${expectedParamCount} value(s), then try again.`,
             code: 'TEMPLATE_PARAM_MISMATCH',
             expected_param_count: expectedParamCount,

@@ -14,6 +14,7 @@ import {
  Radio,
  Zap,
  Workflow,
+ FileText,
  Settings,
  LogOut,
  User,
@@ -50,6 +51,7 @@ const navItems: NavItem[] = [
  { href: "/contacts", label: "Contacts", icon: Users },
  { href: "/pipelines", label: "Pipelines", icon: GitBranch },
  { href: "/broadcasts", label: "Broadcasts", icon: Radio },
+ { href: "/templates", label: "Templates", icon: FileText },
  { href: "/automations", label: "Automations", icon: Zap },
  { href: "/flows", label: "Flows", icon: Workflow, beta: true },
 ];
