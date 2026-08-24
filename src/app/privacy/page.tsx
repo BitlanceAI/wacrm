@@ -14,7 +14,7 @@ export const metadata: Metadata = {
 };
 
 const EFFECTIVE_DATE = 'August 24, 2026';
-const CONTACT_EMAIL = 'bitlanceai@gmail.com';
+const CONTACT_EMAIL = 'ceo@bitlancetechhub.com';
 
 export default function PrivacyPolicyPage() {
   return (
