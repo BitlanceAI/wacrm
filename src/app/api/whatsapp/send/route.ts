@@ -1,6 +1,11 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { sendTextMessage, sendTemplateMessage } from '@/lib/whatsapp/meta-api'
+import {
+ sendTextMessage,
+ sendTemplateMessage,
+ fetchTemplateDefinition,
+ buildButtonComponents,
+} from '@/lib/whatsapp/meta-api'
 import { decrypt, encrypt, isLegacyFormat } from '@/lib/whatsapp/encryption'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
 import {
@@ -182,6 +187,25 @@ export async function POST(request: Request) {
  let waMessageId = ''
  let workingPhone = sanitizedPhone
 
+ // Templates with Flow buttons must echo a sub_type:"flow" button
+ // component on every send or Meta rejects with #131009. Same logic
+ // as the broadcast route; lookup failure degrades to sending
+ // without button components.
+ let extraComponents: Record<string, unknown>[] = []
+ if (message_type === 'template' && config.waba_id) {
+ const definition = await fetchTemplateDefinition({
+ wabaId: config.waba_id,
+ accessToken,
+ name: template_name,
+ language: template_language || 'en_US',
+ })
+ const built = buildButtonComponents(definition)
+ if (built.blocker) {
+ return NextResponse.json({ error: built.blocker }, { status: 400 })
+ }
+ extraComponents = built.components
+ }
+
  const attempt = async (phone: string): Promise<string> => {
  if (message_type === 'template') {
  const result = await sendTemplateMessage({
@@ -191,6 +215,7 @@ export async function POST(request: Request) {
  templateName: template_name,
  language: template_language || 'en_US',
  params: template_params || [],
+ extraComponents,
  contextMessageId,
  })
  return result.messageId

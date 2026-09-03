@@ -36,6 +36,10 @@ yarn-error.log*
 !.env.local.example
 !.env.example
 
+# local-only working folders (marketing skills + internal docs)
+/skills
+/docs
+
 # vercel
 .vercel
 

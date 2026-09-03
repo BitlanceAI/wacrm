@@ -68,10 +68,17 @@ interface WhatsAppMessage {
  * to advance the per-contact run.
  */
  interactive?: {
- type: 'button_reply' | 'list_reply'
+ type: 'button_reply' | 'list_reply' | 'nfm_reply'
  button_reply?: { id: string; title: string }
  list_reply?: { id: string; title: string; description?: string }
+ /** A completed WhatsApp Flow (form). `response_json` holds the
+ * submitted fields as a JSON string. */
+ nfm_reply?: { name?: string; body?: string; response_json?: string }
  }
+ /** Set when the customer taps a quick-reply button on a TEMPLATE
+ * message (broadcasts). Distinct from `interactive`, which covers
+ * buttons on interactive session messages. */
+ button?: { text?: string; payload?: string }
  /** Present when the customer swipe-replies to one of our messages. */
  context?: { id: string }
  /**
@@ -1188,6 +1195,15 @@ async function parseMessageContent(
  }
  }
 
+ case 'button':
+ // Quick-reply button tapped on a TEMPLATE message (e.g. a
+ // broadcast). Meta sends `button.text` (the label) + `.payload`.
+ return {
+ ...empty,
+ contentText: message.button?.text || message.button?.payload || '[Button reply]',
+ interactiveReplyId: message.button?.payload ?? null,
+ }
+
  case 'interactive': {
  // The customer tapped a reply button or a list row on a message
  // we previously sent. Meta delivers `interactive.button_reply` for
@@ -1203,6 +1219,25 @@ async function parseMessageContent(
  contentText: reply.title || reply.id,
  interactiveReplyId: reply.id,
  }
+ }
+ // A completed WhatsApp Flow (form) — `nfm_reply.response_json`
+ // holds the submitted answers. Render them as readable
+ // "field: value" lines so the agent sees the actual submission,
+ // not an opaque placeholder.
+ const nfm = message.interactive?.nfm_reply
+ if (nfm) {
+ let summary = nfm.body || 'Form submitted'
+ try {
+ const parsed = JSON.parse(nfm.response_json ?? '{}') as Record<string, unknown>
+ const lines = Object.entries(parsed)
+ // flow_token is plumbing, not an answer.
+ .filter(([k]) => k !== 'flow_token')
+ .map(([k, v]) => `${k.replace(/_/g, ' ')}: ${String(v)}`)
+ if (lines.length > 0) summary = `📋 ${nfm.name || 'Form'} — ${lines.join(' · ')}`
+ } catch {
+ // keep the body/placeholder summary
+ }
+ return { ...empty, contentText: summary }
  }
  return { ...empty, contentText: '[Interactive reply]' }
  }

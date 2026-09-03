@@ -24,7 +24,16 @@ export interface MetaPhoneInfo {
 }
 
 interface MetaErrorResponse {
- error?: { message?: string; code?: number; type?: string }
+ error?: {
+ message?: string
+ code?: number
+ type?: string
+ // Meta's pinpoint diagnostics — for template errors like #131009
+ // this names the offending component ("header: Format mismatch,
+ // expected IMAGE, received UNKNOWN"). Losing it turns a one-line
+ // fix into guesswork, so it's appended to the thrown message.
+ error_data?: { details?: string }
+ }
 }
 
 async function throwMetaError(response: Response, fallback: string): Promise<never> {
@@ -32,6 +41,10 @@ async function throwMetaError(response: Response, fallback: string): Promise<nev
  try {
  const data = (await response.json()) as MetaErrorResponse
  if (data.error?.message) message = data.error.message
+ const details = data.error?.error_data?.details
+ if (details && !message.includes(details)) {
+ message = `${message} — ${details}`
+ }
  } catch {
  // response body wasn't JSON — keep the fallback
  }
@@ -414,6 +427,105 @@ export async function subscribeWabaToApp(
 }
 
 // ============================================================
+// Template definitions
+// ============================================================
+
+export interface MetaTemplateButtonDef {
+ type: string // QUICK_REPLY | URL | PHONE_NUMBER | FLOW | COPY_CODE | OTP …
+ text?: string
+ url?: string
+}
+
+export interface MetaTemplateComponentDef {
+ type: string // HEADER | BODY | FOOTER | BUTTONS
+ format?: string
+ text?: string
+ buttons?: MetaTemplateButtonDef[]
+}
+
+export interface MetaTemplateDefinition {
+ name: string
+ language: string
+ components?: MetaTemplateComponentDef[]
+}
+
+/**
+ * Fetch one template's full definition (incl. buttons) from Meta.
+ * The local message_templates cache stores only header/body/footer, so
+ * anything that needs the button layout — Flow buttons, dynamic URL
+ * buttons — must ask Meta. Returns null on any failure: callers use
+ * this to *improve* a send, never to gate one.
+ */
+export async function fetchTemplateDefinition(args: {
+ wabaId: string
+ accessToken: string
+ name: string
+ language: string
+}): Promise<MetaTemplateDefinition | null> {
+ try {
+ // Meta's `name` filter matches loosely; compare exactly below.
+ const url = `${META_API_BASE}/${args.wabaId}/message_templates?name=${encodeURIComponent(args.name)}&fields=name,language,components&limit=100`
+ const response = await fetch(url, {
+ headers: { Authorization: `Bearer ${args.accessToken}` },
+ })
+ if (!response.ok) return null
+ const data = (await response.json()) as { data?: MetaTemplateDefinition[] }
+ return (
+ (data.data ?? []).find(
+ (t) => t.name === args.name && t.language === args.language
+ ) ?? null
+ )
+ } catch {
+ return null
+ }
+}
+
+/**
+ * Build the send-time `button` components a template's button layout
+ * demands, or report why the template can't be sent by this pipeline.
+ *
+ * - FLOW buttons must be echoed as {sub_type:"flow"} components on
+ *   every send — omitting them fails with #131009 "Components
+ *   sub_type invalid".
+ * - Dynamic URL buttons ({{1}} in the URL) and COPY_CODE buttons need
+ *   per-send values the pipeline doesn't collect yet → blocked with an
+ *   actionable message instead of a cryptic Meta error.
+ * - QUICK_REPLY / PHONE_NUMBER / static URL buttons need nothing.
+ */
+export function buildButtonComponents(def: MetaTemplateDefinition | null): {
+ components: Record<string, unknown>[]
+ blocker: string | null
+} {
+ const buttons =
+ def?.components?.find((c) => c.type?.toUpperCase() === 'BUTTONS')?.buttons ??
+ []
+ const components: Record<string, unknown>[] = []
+ for (let i = 0; i < buttons.length; i++) {
+ const type = buttons[i]?.type?.toUpperCase() ?? ''
+ if (type === 'FLOW') {
+ components.push({
+ type: 'button',
+ sub_type: 'flow',
+ index: String(i),
+ parameters: [{ type: 'action', action: {} }],
+ })
+ } else if (type === 'URL' && /\{\{\s*\d+\s*\}\}/.test(buttons[i]?.url ?? '')) {
+ return {
+ components,
+ blocker: `This template's "${buttons[i]?.text ?? 'URL'}" button has a dynamic URL variable, which broadcasts don't support yet. Recreate the template with a fixed URL, or remove the variable from the button.`,
+ }
+ } else if (type === 'COPY_CODE') {
+ return {
+ components,
+ blocker:
+ 'This template has a copy-code (coupon) button, which needs a per-send code that broadcasts don\'t support yet. Use a template without a copy-code button.',
+ }
+ }
+ }
+ return { components, blocker: null }
+}
+
+// ============================================================
 // Sending
 // ============================================================
 
@@ -483,6 +595,9 @@ export interface SendTemplateMessageArgs {
  params?: string[]
  /** Required when the template's header has a variable or is media. */
  header?: TemplateHeaderParam
+ /** Extra pre-built components appended after header/body — e.g. the
+ * `button` components from buildButtonComponents for Flow buttons. */
+ extraComponents?: Record<string, unknown>[]
  /** Meta's message_id of the message being replied to. */
  contextMessageId?: string
 }
@@ -502,6 +617,7 @@ export async function sendTemplateMessage(
  language = 'en_US',
  params,
  header,
+ extraComponents,
  contextMessageId,
  } = args
  const url = `${META_API_BASE}/${phoneNumberId}/messages`
@@ -530,8 +646,19 @@ export async function sendTemplateMessage(
  if (params && params.length > 0) {
  components.push({
  type: 'body',
- parameters: params.map((p) => ({ type: 'text', text: String(p) })),
+ // Meta rejects body values containing newlines, tabs, or 4+
+ // consecutive spaces with #131009 "Parameter value is not valid"
+ // — easy to hit via CSV-imported names. Whitespace-only cleanup,
+ // so the visible content is unchanged.
+ parameters: params.map((p) => ({
+ type: 'text',
+ text: String(p).replace(/[\r\n\t]+/g, ' ').replace(/ {4,}/g, ' ').trim(),
+ })),
  })
+ }
+
+ if (extraComponents && extraComponents.length > 0) {
+ components.push(...extraComponents)
  }
 
  if (components.length > 0) {

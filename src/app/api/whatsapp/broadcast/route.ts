@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import {
   sendTemplateMessage,
+  fetchTemplateDefinition,
+  buildButtonComponents,
   type TemplateHeaderParam,
 } from '@/lib/whatsapp/meta-api'
 import { decrypt } from '@/lib/whatsapp/encryption'
@@ -128,6 +130,9 @@ function friendlyMetaError(raw: string | null): string {
   }
   if (raw.includes('132001')) {
     return `${raw} — Meta has no approved template with this name and language. Verify the template name/language, or sync templates from Meta.`
+  }
+  if (raw.includes('131009')) {
+    return `${raw} — Meta rejected a component of this send. Most common causes: the template has a media (image/video) header or URL button that needs content on every send, or a variable value contains a newline/tab or 4+ consecutive spaces. Run Templates → Sync from Meta so the stored copy matches Meta's shape, then rebuild the broadcast — the wizard will ask for anything the template needs.`
   }
   return raw
 }
@@ -338,6 +343,38 @@ export async function POST(request: Request) {
       }
     }
 
+    // ── Button layout (Flow / dynamic-URL buttons) ─────────────────
+    // The local cache doesn't store buttons, so ask Meta for the real
+    // layout. Templates with Flow buttons must carry a sub_type:"flow"
+    // button component on every send or Meta rejects with #131009
+    // "Components sub_type invalid". Lookup failure degrades to the
+    // old behavior (send without button components).
+    let buttonComponents: Record<string, unknown>[] = []
+    if (config.waba_id) {
+      const definition = await fetchTemplateDefinition({
+        wabaId: config.waba_id,
+        accessToken,
+        name: template_name,
+        language: template_language || 'en_US',
+      })
+      const built = buildButtonComponents(definition)
+      if (built.blocker) {
+        console.error(
+          `[broadcast] ✗ BLOCKED  template="${template_name}" button layout: ${built.blocker}`
+        )
+        return NextResponse.json(
+          { error: built.blocker, code: 'TEMPLATE_BUTTONS_UNSUPPORTED' },
+          { status: 400 }
+        )
+      }
+      buttonComponents = built.components
+      if (buttonComponents.length > 0) {
+        console.log(
+          `[broadcast] template has ${buttonComponents.length} button component(s) requiring send-time echo (e.g. Flow) — attaching automatically`
+        )
+      }
+    }
+
     // ── Broadcast start log ────────────────────────────────────────
     console.log(
       `[broadcast] ▶ START  template="${template_name}"  lang="${template_language || 'en_US'}"  recipients=${recipients.length}  phoneNumberId="${config.phone_number_id}"`
@@ -409,6 +446,7 @@ export async function POST(request: Request) {
             language: template_language || 'en_US',
             params: recipient.params ?? [],
             header: templateHeader,
+            extraComponents: buttonComponents,
           })
           sentMessageId = result.messageId
           lastError = null
