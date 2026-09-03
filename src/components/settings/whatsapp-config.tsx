@@ -140,13 +140,14 @@ export function WhatsAppConfig() {
  const embeddedSignupAvailable = Boolean(esAppId && esConfigId);
  const [signingUp, setSigningUp] = useState(false);
 
- async function handleEmbeddedSignup() {
+ async function handleEmbeddedSignup(coexistence = false) {
  if (!esAppId || !esConfigId) return;
  setSigningUp(true);
  try {
  const result = await launchEmbeddedSignup({
  appId: esAppId,
  configId: esConfigId,
+ coexistence,
  });
 
  const res = await fetch('/api/whatsapp/embedded-signup', {
@@ -455,14 +456,27 @@ export function WhatsAppConfig() {
  </CardDescription>
  </CardHeader>
  <CardContent>
+ <div className="flex flex-wrap items-center gap-2">
  <Button
- onClick={handleEmbeddedSignup}
+ onClick={() => handleEmbeddedSignup(false)}
  disabled={signingUp}
  className="bg-[#1877F2] text-white hover:bg-[#1877F2]/90 disabled:opacity-50"
  >
  {signingUp ? 'Waiting for Meta…' : 'Connect WhatsApp via Facebook'}
  </Button>
+ <Button
+ variant="outline"
+ onClick={() => handleEmbeddedSignup(true)}
+ disabled={signingUp}
+ className="border-border text-foreground hover:bg-accent disabled:opacity-50"
+ title="Keep using the WhatsApp Business App on your phone while also connecting this CRM — you'll scan a QR code from the app during setup"
+ >
+ Connect a WhatsApp Business App number
+ </Button>
+ </div>
  <p className="mt-2 text-xs text-muted-foreground">
+ Use the second option if the number is already active in the
+ WhatsApp Business App on a phone — both keep working (coexistence).
  Prefer manual setup? Use the API credentials form below instead.
  </p>
  </CardContent>

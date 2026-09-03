@@ -99,6 +99,16 @@ export function loadFacebookSdk(appId: string): Promise<FbSdk> {
 export async function launchEmbeddedSignup(opts: {
   appId: string
   configId: string
+  /**
+   * Coexistence: onboard a number that is actively used in the
+   * WhatsApp Business App, keeping the app AND Cloud API working on
+   * it. Swaps the WABA-selection screen for the "connect your
+   * existing WhatsApp Business account" flow (QR scan from the
+   * phone's app, version >= 2.24.17). Finishes with the
+   * FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING event, which the message
+   * handler below already accepts.
+   */
+  coexistence?: boolean
 }): Promise<EmbeddedSignupResult> {
   const FB = await loadFacebookSdk(opts.appId)
 
@@ -144,7 +154,13 @@ export async function launchEmbeddedSignup(opts: {
           config_id: opts.configId,
           response_type: 'code',
           override_default_response_type: true,
-          extras: { setup: {}, sessionInfoVersion: '3' },
+          extras: {
+            setup: {},
+            sessionInfoVersion: '3',
+            ...(opts.coexistence
+              ? { featureType: 'whatsapp_business_app_onboarding' }
+              : {}),
+          },
         },
       )
     })
