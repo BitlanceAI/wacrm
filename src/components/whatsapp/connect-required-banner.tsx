@@ -30,7 +30,6 @@ export function ConnectRequiredBanner() {
     createClient()
       .from('whatsapp_config')
       .select('status')
-      .eq('user_id', user.id)
       .maybeSingle()
       .then(({ data }) => {
         if (!cancelled) setConnected(data?.status === 'connected');

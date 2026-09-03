@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { parseAmountToMinor } from '@/lib/billing/money'
+import { resolveTenantUserId } from '@/lib/team/tenant'
 
 /**
  * Recurring plans. The billing cron rolls `next_renewal_date` forward
@@ -16,6 +17,8 @@ export async function GET() {
   if (authError || !user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
+
+  const tenantId = await resolveTenantUserId(supabase, user.id)
 
   const { data, error } = await supabase
     .from('subscriptions')
@@ -37,6 +40,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
+  const tenantId = await resolveTenantUserId(supabase, user.id)
+
   const body = await request.json()
   const amountMinor = parseAmountToMinor(body.amount)
   if (!body.contact_id || !body.plan_name?.trim() || amountMinor === null) {
@@ -55,7 +60,7 @@ export async function POST(request: Request) {
   const { data, error } = await supabase
     .from('subscriptions')
     .insert({
-      user_id: user.id,
+      user_id: tenantId,
       contact_id: body.contact_id,
       plan_name: body.plan_name.trim(),
       amount_minor: amountMinor,
@@ -83,6 +88,8 @@ export async function PATCH(request: Request) {
   if (authError || !user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
+
+  const tenantId = await resolveTenantUserId(supabase, user.id)
 
   const body = await request.json()
   if (!body.id) {
@@ -131,6 +138,8 @@ export async function DELETE(request: Request) {
   if (authError || !user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
+
+  const tenantId = await resolveTenantUserId(supabase, user.id)
 
   const { searchParams } = new URL(request.url)
   const id = searchParams.get('id')

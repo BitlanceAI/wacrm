@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Upload, FileText, Loader2, CheckCircle, XCircle } from 'lucide-react';
+import { useTenant } from '@/hooks/use-tenant';
 
 interface ImportModalProps {
     open: boolean;
@@ -81,6 +82,8 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
     const supabase = createClient();
     const fileInputRef = useRef<HTMLInputElement>(null);
 
+    const { tenantId } = useTenant();
+
     const [file, setFile] = useState<File | null>(null);
     const [parsedRows, setParsedRows] = useState<ParsedRow[]>([]);
     const [importing, setImporting] = useState(false);
@@ -136,7 +139,7 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
             for (let i = 0; i < parsedRows.length; i += chunkSize) {
                 const chunk = parsedRows.slice(i, i + chunkSize);
                 const rows = chunk.map((row) => ({
-                    user_id: user.id,
+                    user_id: tenantId,
                     phone: row.phone,
                     name: row.name || null,
                     email: row.email || null,

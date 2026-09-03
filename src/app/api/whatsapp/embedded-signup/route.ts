@@ -10,6 +10,7 @@ import {
   wabaHasPaymentMethod,
 } from '@/lib/whatsapp/meta-api'
 import { checkRateLimit, rateLimitResponse } from '@/lib/rate-limit'
+import { resolveTenantUserId } from '@/lib/team/tenant'
 
 /**
  * Server half of Meta's Embedded Signup.
@@ -44,6 +45,15 @@ export async function POST(request: Request) {
 
     if (authError || !user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
+    // Connection management is owner-only (see config route).
+    const tenantId = await resolveTenantUserId(supabase, user.id)
+    if (tenantId !== user.id) {
+      return NextResponse.json(
+        { error: 'Only the workspace owner can connect a WhatsApp account.' },
+        { status: 403 }
+      )
     }
 
     // Onboarding is rare; anything faster than a handful per minute is

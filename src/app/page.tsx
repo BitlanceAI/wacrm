@@ -93,6 +93,18 @@ export default function LandingPage() {
           </Link>
           <nav className="flex items-center gap-2">
             <Link
+              href="/pricing"
+              className="hidden rounded-lg px-4 py-2 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground sm:block"
+            >
+              Pricing
+            </Link>
+            <Link
+              href="/compare"
+              className="hidden rounded-lg px-4 py-2 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground sm:block"
+            >
+              Compare
+            </Link>
+            <Link
               href="/login"
               className="rounded-lg px-4 py-2 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
             >
@@ -294,6 +306,9 @@ export default function LandingPage() {
         <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 px-6 py-8 text-sm text-muted-foreground sm:flex-row">
           <p>© {new Date().getFullYear()} Bitlance Tech Hub</p>
           <nav className="flex items-center gap-6">
+            <Link href="/pricing" className="hover:text-foreground">
+              Pricing
+            </Link>
             <Link href="/privacy" className="hover:text-foreground">
               Privacy
             </Link>

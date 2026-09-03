@@ -17,6 +17,7 @@ import {
     validateSchedule,
     type BusinessDay,
 } from '@/lib/support/business-hours';
+import { useTenant } from '@/hooks/use-tenant';
 
 /**
  * Common IANA zones, India first — the deployment's primary market.
@@ -63,6 +64,7 @@ const DEFAULTS: InboxSettings = {
 export function SupportDeskPanel() {
     const supabase = createClient();
     const { user, loading: authLoading } = useAuth();
+    const { tenantId } = useTenant();
 
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
@@ -78,7 +80,6 @@ export function SupportDeskPanel() {
             const { data, error } = await supabase
                 .from('inbox_settings')
                 .select('*')
-                .eq('user_id', user.id)
                 .maybeSingle();
             setLoading(false);
             if (error) {
@@ -123,7 +124,7 @@ export function SupportDeskPanel() {
         setSaving(true);
         const { error } = await supabase.from('inbox_settings').upsert(
             {
-                user_id: user.id,
+                user_id: tenantId,
                 ...settings,
                 updated_at: new Date().toISOString(),
             },

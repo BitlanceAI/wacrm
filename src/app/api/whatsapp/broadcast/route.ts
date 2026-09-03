@@ -21,6 +21,7 @@ import {
   getTemplateSendBlocker,
   getTemplateHeaderRequirement,
 } from '@/lib/whatsapp/template-capabilities'
+import { resolveTenantUserId } from '@/lib/team/tenant'
 
 interface BroadcastResult {
   phone: string
@@ -144,11 +145,13 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
+    const tenantId = await resolveTenantUserId(supabase, user.id)
+
     // Per-user broadcast budget. The sending hook calls this route
     // once per 10-recipient batch, so the limit must absorb a full
     // campaign's batch cadence (see RATE_LIMITS.broadcast) — it exists
     // to cap runaway callers, not to meter messages inside a campaign.
-    const limit = checkRateLimit(`broadcast:${user.id}`, RATE_LIMITS.broadcast)
+    const limit = checkRateLimit(`broadcast:${tenantId}`, RATE_LIMITS.broadcast)
     if (!limit.success) {
       return rateLimitResponse(limit)
     }
@@ -198,7 +201,7 @@ export async function POST(request: Request) {
     const { data: config, error: configError } = await supabase
       .from('whatsapp_config')
       .select('*')
-      .eq('user_id', user.id)
+      .eq('user_id', tenantId)
       .single()
 
     if (configError || !config) {
@@ -222,7 +225,7 @@ export async function POST(request: Request) {
     let templateQuery = supabase
       .from('message_templates')
       .select('body_text, header_type, header_content')
-      .eq('user_id', user.id)
+      .eq('user_id', tenantId)
       .eq('name', template_name)
     if (template_language) {
       templateQuery = templateQuery.eq('language', template_language)

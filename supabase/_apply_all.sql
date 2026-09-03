@@ -2759,3 +2759,433 @@ REVOKE ALL ON FUNCTION admin_tenant_stats() FROM PUBLIC;
 REVOKE ALL ON FUNCTION admin_tenant_stats() FROM anon;
 REVOKE ALL ON FUNCTION admin_tenant_stats() FROM authenticated;
 GRANT EXECUTE ON FUNCTION admin_tenant_stats() TO service_role;
+
+
+-- ============================================================
+-- ## 023_plans.sql
+-- ============================================================
+
+-- 023_plans.sql
+--
+-- Subscription plans, DB-driven so the operator edits pricing from
+-- /admin/pricing instead of redeploying. The public /pricing page
+-- reads these rows anonymously; writes go through the admin panel's
+-- server actions on the service-role client only.
+
+CREATE TABLE IF NOT EXISTS plans (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  slug TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  description TEXT,
+  -- Integer minor units (paise), same convention as billing (019).
+  price_monthly_minor BIGINT NOT NULL CHECK (price_monthly_minor >= 0),
+  price_yearly_minor BIGINT CHECK (price_yearly_minor >= 0),
+  currency TEXT NOT NULL DEFAULT 'INR',
+  -- Display bullet points, JSON array of strings.
+  features JSONB NOT NULL DEFAULT '[]'::jsonb,
+  -- "MOST POPULAR" style emphasis on the pricing page.
+  highlight BOOLEAN NOT NULL DEFAULT false,
+  active BOOLEAN NOT NULL DEFAULT true,
+  sort_order INT NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+ALTER TABLE plans ENABLE ROW LEVEL SECURITY;
+
+-- Anyone (including anonymous visitors on /pricing) may read active
+-- plans. No insert/update/delete policies exist: all writes happen on
+-- the service-role client from the admin panel.
+DROP POLICY IF EXISTS "Anyone can read active plans" ON plans;
+CREATE POLICY "Anyone can read active plans" ON plans
+  FOR SELECT USING (active = true);
+
+DROP TRIGGER IF EXISTS set_updated_at ON plans;
+CREATE TRIGGER set_updated_at BEFORE UPDATE ON plans
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- Seed the launch tiers (idempotent). Prices in paise.
+INSERT INTO plans (slug, name, description, price_monthly_minor, price_yearly_minor, features, highlight, sort_order)
+VALUES
+  (
+    'starter', 'Starter',
+    'For solo founders getting their WhatsApp channel off the ground.',
+    99900, 999000,
+    '["1 team member","5,000 contacts","100 campaigns / month","Shared team inbox","Template builder with Meta submission","Basic automations","Meta message rates — zero markup"]'::jsonb,
+    false, 1
+  ),
+  (
+    'growth', 'Growth',
+    'For growing teams running WhatsApp as a real revenue channel.',
+    249900, 2499000,
+    '["5 team members","50,000 contacts","Unlimited campaigns","Everything in Starter","Chatbot flows & advanced automations","Developer API & webhooks","WhatsApp Business App coexistence","Priority support"]'::jsonb,
+    true, 2
+  ),
+  (
+    'business', 'Business',
+    'For established businesses running their operations on WhatsApp.',
+    499900, 4999000,
+    '["Unlimited team members","Unlimited contacts","Everything in Growth","Catalog & order management","Invoices & payment reminders","Loyalty & coupons","Appointments","Dedicated onboarding & support"]'::jsonb,
+    false, 3
+  )
+ON CONFLICT (slug) DO NOTHING;
+
+
+-- ============================================================
+-- ## 023_plans.sql
+-- ============================================================
+
+-- 023_plans.sql
+--
+-- Subscription plans, DB-driven so the operator edits pricing from
+-- /admin/pricing instead of redeploying. The public /pricing page
+-- reads these rows anonymously; writes go through the admin panel's
+-- server actions on the service-role client only.
+
+CREATE TABLE IF NOT EXISTS plans (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  slug TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  description TEXT,
+  -- Integer minor units (paise), same convention as billing (019).
+  price_monthly_minor BIGINT NOT NULL CHECK (price_monthly_minor >= 0),
+  price_yearly_minor BIGINT CHECK (price_yearly_minor >= 0),
+  currency TEXT NOT NULL DEFAULT 'INR',
+  -- Display bullet points, JSON array of strings.
+  features JSONB NOT NULL DEFAULT '[]'::jsonb,
+  -- "MOST POPULAR" style emphasis on the pricing page.
+  highlight BOOLEAN NOT NULL DEFAULT false,
+  active BOOLEAN NOT NULL DEFAULT true,
+  sort_order INT NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+ALTER TABLE plans ENABLE ROW LEVEL SECURITY;
+
+-- Anyone (including anonymous visitors on /pricing) may read active
+-- plans. No insert/update/delete policies exist: all writes happen on
+-- the service-role client from the admin panel.
+DROP POLICY IF EXISTS "Anyone can read active plans" ON plans;
+CREATE POLICY "Anyone can read active plans" ON plans
+  FOR SELECT USING (active = true);
+
+DROP TRIGGER IF EXISTS set_updated_at ON plans;
+CREATE TRIGGER set_updated_at BEFORE UPDATE ON plans
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- Seed the launch tiers (idempotent). Prices in paise.
+INSERT INTO plans (slug, name, description, price_monthly_minor, price_yearly_minor, features, highlight, sort_order)
+VALUES
+  (
+    'starter', 'Starter',
+    'For solo founders getting their WhatsApp channel off the ground.',
+    99900, 999000,
+    '["1 team member","5,000 contacts","100 campaigns / month","Shared team inbox","Template builder with Meta submission","Basic automations","Meta message rates — zero markup"]'::jsonb,
+    false, 1
+  ),
+  (
+    'growth', 'Growth',
+    'For growing teams running WhatsApp as a real revenue channel.',
+    249900, 2499000,
+    '["5 team members","50,000 contacts","Unlimited campaigns","Everything in Starter","Chatbot flows & advanced automations","Developer API & webhooks","WhatsApp Business App coexistence","Priority support"]'::jsonb,
+    true, 2
+  ),
+  (
+    'business', 'Business',
+    'For established businesses running their operations on WhatsApp.',
+    499900, 4999000,
+    '["Unlimited team members","Unlimited contacts","Everything in Growth","Catalog & order management","Invoices & payment reminders","Loyalty & coupons","Appointments","Dedicated onboarding & support"]'::jsonb,
+    false, 3
+  )
+ON CONFLICT (slug) DO NOTHING;
+
+
+-- ============================================================
+-- ## 024_team_members.sql
+-- ============================================================
+
+-- 024_team_members.sql
+--
+-- Path-B multi-user: team members share the OWNER's tenant without
+-- re-keying any table. The owner's user_id stays the tenant key on
+-- every row; membership grants access through two helper functions
+-- used by every rewritten RLS policy below.
+--
+--   has_team_access(owner) -> the caller IS that owner, or an active
+--     member of that owner's team. Used in USING clauses.
+--   tenant_id() -> the tenant a caller writes into: their owner's id
+--     if they are a member, else their own. Used in WITH CHECK so a
+--     member's inserts land in the owner's tenant (client code passes
+--     the tenant id explicitly; this is the backstop).
+--
+-- Both are SECURITY DEFINER so policy evaluation does not recurse
+-- into team_members' own RLS.
+
+CREATE TABLE IF NOT EXISTS team_members (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  owner_user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  member_user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  role TEXT NOT NULL DEFAULT 'agent' CHECK (role IN ('agent', 'admin')),
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled')),
+  invited_email TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (owner_user_id, member_user_id),
+  -- One team per member account keeps tenant resolution unambiguous.
+  UNIQUE (member_user_id),
+  CHECK (owner_user_id <> member_user_id)
+);
+
+ALTER TABLE team_members ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Owners manage their team" ON team_members;
+CREATE POLICY "Owners manage their team" ON team_members
+  FOR ALL USING (auth.uid() = owner_user_id);
+DROP POLICY IF EXISTS "Members can see their own membership" ON team_members;
+CREATE POLICY "Members can see their own membership" ON team_members
+  FOR SELECT USING (auth.uid() = member_user_id);
+
+CREATE INDEX IF NOT EXISTS idx_team_members_member ON team_members(member_user_id) WHERE status = 'active';
+
+CREATE OR REPLACE FUNCTION has_team_access(p_owner UUID)
+RETURNS BOOLEAN
+LANGUAGE sql SECURITY DEFINER STABLE
+SET search_path = public
+AS $$
+  SELECT p_owner = auth.uid() OR EXISTS (
+    SELECT 1 FROM team_members
+    WHERE owner_user_id = p_owner
+      AND member_user_id = auth.uid()
+      AND status = 'active'
+  );
+$$;
+GRANT EXECUTE ON FUNCTION has_team_access(UUID) TO authenticated;
+
+CREATE OR REPLACE FUNCTION tenant_id()
+RETURNS UUID
+LANGUAGE sql SECURITY DEFINER STABLE
+SET search_path = public
+AS $$
+  SELECT COALESCE(
+    (SELECT owner_user_id FROM team_members
+     WHERE member_user_id = auth.uid() AND status = 'active'
+     LIMIT 1),
+    auth.uid()
+  );
+$$;
+GRANT EXECUTE ON FUNCTION tenant_id() TO authenticated;
+
+-- whatsapp_config: members may SEE connection status, but only the
+-- owner may change the connection (it holds the encrypted token).
+DROP POLICY IF EXISTS "Users can manage own config" ON whatsapp_config;
+CREATE POLICY "Team can read config" ON whatsapp_config
+  FOR SELECT USING (has_team_access(user_id));
+CREATE POLICY "Owner inserts config" ON whatsapp_config
+  FOR INSERT WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Owner updates config" ON whatsapp_config
+  FOR UPDATE USING (auth.uid() = user_id);
+CREATE POLICY "Owner deletes config" ON whatsapp_config
+  FOR DELETE USING (auth.uid() = user_id);
+
+-- ============================================================
+-- Rewritten tenant-table policies (generated from the originals:
+-- auth.uid() = user_id  ->  has_team_access(user_id), and join
+-- policies likewise on the parent's user_id; personal predicates
+-- such as message_reactions.actor_id are untouched).
+-- ============================================================
+
+DROP POLICY IF EXISTS "Users can manage own contacts" ON contacts;
+CREATE POLICY "Users can manage own contacts" ON contacts FOR ALL USING (has_team_access(user_id)) WITH CHECK (user_id = tenant_id());
+
+DROP POLICY IF EXISTS "Users can manage own tags" ON tags;
+CREATE POLICY "Users can manage own tags" ON tags FOR ALL USING (has_team_access(user_id)) WITH CHECK (user_id = tenant_id());
+
+DROP POLICY IF EXISTS "Users can manage contact tags" ON contact_tags;
+CREATE POLICY "Users can manage contact tags" ON contact_tags FOR ALL
+  USING (EXISTS (SELECT 1 FROM contacts WHERE contacts.id = contact_tags.contact_id AND has_team_access(contacts.user_id)));
+
+DROP POLICY IF EXISTS "Users can manage own custom fields" ON custom_fields;
+CREATE POLICY "Users can manage own custom fields" ON custom_fields FOR ALL USING (has_team_access(user_id)) WITH CHECK (user_id = tenant_id());
+
+DROP POLICY IF EXISTS "Users can manage custom values" ON contact_custom_values;
+CREATE POLICY "Users can manage custom values" ON contact_custom_values FOR ALL
+  USING (EXISTS (SELECT 1 FROM contacts WHERE contacts.id = contact_custom_values.contact_id AND has_team_access(contacts.user_id)));
+
+DROP POLICY IF EXISTS "Users can manage own notes" ON contact_notes;
+CREATE POLICY "Users can manage own notes" ON contact_notes FOR ALL USING (has_team_access(user_id)) WITH CHECK (user_id = tenant_id());
+
+DROP POLICY IF EXISTS "Users can manage own conversations" ON conversations;
+CREATE POLICY "Users can manage own conversations" ON conversations FOR ALL USING (has_team_access(user_id)) WITH CHECK (user_id = tenant_id());
+
+DROP POLICY IF EXISTS "Users can view own messages" ON messages;
+CREATE POLICY "Users can view own messages" ON messages FOR ALL
+  USING (EXISTS (SELECT 1 FROM conversations WHERE conversations.id = messages.conversation_id AND has_team_access(conversations.user_id)));
+
+DROP POLICY IF EXISTS "Users can manage own templates" ON message_templates;
+CREATE POLICY "Users can manage own templates" ON message_templates FOR ALL USING (has_team_access(user_id)) WITH CHECK (user_id = tenant_id());
+
+DROP POLICY IF EXISTS "Users can manage own pipelines" ON pipelines;
+CREATE POLICY "Users can manage own pipelines" ON pipelines FOR ALL USING (has_team_access(user_id)) WITH CHECK (user_id = tenant_id());
+
+DROP POLICY IF EXISTS "Users can manage pipeline stages" ON pipeline_stages;
+CREATE POLICY "Users can manage pipeline stages" ON pipeline_stages FOR ALL
+  USING (EXISTS (SELECT 1 FROM pipelines WHERE pipelines.id = pipeline_stages.pipeline_id AND has_team_access(pipelines.user_id)));
+
+DROP POLICY IF EXISTS "Users can manage own deals" ON deals;
+CREATE POLICY "Users can manage own deals" ON deals FOR ALL USING (has_team_access(user_id)) WITH CHECK (user_id = tenant_id());
+
+DROP POLICY IF EXISTS "Users can manage own broadcasts" ON broadcasts;
+CREATE POLICY "Users can manage own broadcasts" ON broadcasts FOR ALL USING (has_team_access(user_id)) WITH CHECK (user_id = tenant_id());
+
+DROP POLICY IF EXISTS "Users can manage broadcast recipients" ON broadcast_recipients;
+CREATE POLICY "Users can manage broadcast recipients" ON broadcast_recipients FOR ALL
+  USING (EXISTS (SELECT 1 FROM broadcasts WHERE broadcasts.id = broadcast_recipients.broadcast_id AND has_team_access(broadcasts.user_id)));
+
+DROP POLICY IF EXISTS "Users can manage own automations" ON automations;
+CREATE POLICY "Users can manage own automations" ON automations FOR ALL
+  USING (has_team_access(user_id)) WITH CHECK (user_id = tenant_id());
+
+DROP POLICY IF EXISTS "Users can manage steps of own automations" ON automation_steps;
+CREATE POLICY "Users can manage steps of own automations" ON automation_steps FOR ALL
+  USING (
+    EXISTS (
+      SELECT 1 FROM automations a
+      WHERE a.id = automation_steps.automation_id
+        AND has_team_access(a.user_id)
+    )
+  );
+
+DROP POLICY IF EXISTS "Users can view own automation logs" ON automation_logs;
+CREATE POLICY "Users can view own automation logs" ON automation_logs FOR ALL
+  USING (has_team_access(user_id)) WITH CHECK (user_id = tenant_id());
+
+DROP POLICY IF EXISTS "Users see reactions on their conversations" ON message_reactions;
+CREATE POLICY "Users see reactions on their conversations" ON message_reactions FOR SELECT
+  USING (EXISTS (
+    SELECT 1 FROM conversations c
+    WHERE c.id = message_reactions.conversation_id
+      AND has_team_access(c.user_id)
+  ));
+
+DROP POLICY IF EXISTS "Users insert reactions on their conversations" ON message_reactions;
+CREATE POLICY "Users insert reactions on their conversations" ON message_reactions FOR INSERT
+  WITH CHECK (EXISTS (
+    SELECT 1 FROM conversations c
+    WHERE c.id = message_reactions.conversation_id
+      AND has_team_access(c.user_id)
+  ));
+
+DROP POLICY IF EXISTS "Users delete their own agent reactions" ON message_reactions;
+CREATE POLICY "Users delete their own agent reactions" ON message_reactions FOR DELETE
+  USING (
+    actor_type = 'agent'
+    AND actor_id = auth.uid()
+    AND EXISTS (
+      SELECT 1 FROM conversations c
+      WHERE c.id = message_reactions.conversation_id
+        AND has_team_access(c.user_id)
+    )
+  );
+
+DROP POLICY IF EXISTS "Users update their own agent reactions" ON message_reactions;
+CREATE POLICY "Users update their own agent reactions" ON message_reactions FOR UPDATE
+  USING (
+    actor_type = 'agent'
+    AND actor_id = auth.uid()
+    AND EXISTS (
+      SELECT 1 FROM conversations c
+      WHERE c.id = message_reactions.conversation_id
+        AND has_team_access(c.user_id)
+    )
+  );
+
+DROP POLICY IF EXISTS "Users can manage own flows" ON flows;
+CREATE POLICY "Users can manage own flows" ON flows FOR ALL
+  USING (has_team_access(user_id)) WITH CHECK (user_id = tenant_id());
+
+DROP POLICY IF EXISTS "Users manage nodes on their flows" ON flow_nodes;
+CREATE POLICY "Users manage nodes on their flows" ON flow_nodes FOR ALL
+  USING (EXISTS (
+    SELECT 1 FROM flows f
+    WHERE f.id = flow_nodes.flow_id
+      AND has_team_access(f.user_id)
+  ));
+
+DROP POLICY IF EXISTS "Users see own flow runs" ON flow_runs;
+CREATE POLICY "Users see own flow runs" ON flow_runs FOR SELECT
+  USING (has_team_access(user_id));
+
+DROP POLICY IF EXISTS "Users see events on their runs" ON flow_run_events;
+CREATE POLICY "Users see events on their runs" ON flow_run_events FOR SELECT
+  USING (EXISTS (
+    SELECT 1 FROM flow_runs r
+    WHERE r.id = flow_run_events.flow_run_id
+      AND has_team_access(r.user_id)
+  ));
+
+DROP POLICY IF EXISTS "Users can manage own canned replies" ON canned_replies;
+CREATE POLICY "Users can manage own canned replies" ON canned_replies FOR ALL
+  USING (has_team_access(user_id)) WITH CHECK (user_id = tenant_id());
+
+DROP POLICY IF EXISTS "Users can manage own inbox settings" ON inbox_settings;
+CREATE POLICY "Users can manage own inbox settings" ON inbox_settings FOR ALL
+  USING (has_team_access(user_id)) WITH CHECK (user_id = tenant_id());
+
+DROP POLICY IF EXISTS "Users can manage own csat responses" ON csat_responses;
+CREATE POLICY "Users can manage own csat responses" ON csat_responses FOR ALL
+  USING (has_team_access(user_id)) WITH CHECK (user_id = tenant_id());
+
+DROP POLICY IF EXISTS "Users can manage own appointments" ON appointments;
+CREATE POLICY "Users can manage own appointments" ON appointments FOR ALL
+  USING (has_team_access(user_id)) WITH CHECK (user_id = tenant_id());
+
+DROP POLICY IF EXISTS "Users can manage own appointment reminders" ON appointment_reminders;
+CREATE POLICY "Users can manage own appointment reminders" ON appointment_reminders FOR ALL
+  USING (has_team_access(user_id)) WITH CHECK (user_id = tenant_id());
+
+DROP POLICY IF EXISTS "Users can manage own billing settings" ON billing_settings;
+CREATE POLICY "Users can manage own billing settings" ON billing_settings FOR ALL
+  USING (has_team_access(user_id)) WITH CHECK (user_id = tenant_id());
+
+DROP POLICY IF EXISTS "Users can manage own invoices" ON invoices;
+CREATE POLICY "Users can manage own invoices" ON invoices FOR ALL
+  USING (has_team_access(user_id)) WITH CHECK (user_id = tenant_id());
+
+DROP POLICY IF EXISTS "Users can manage own invoice reminders" ON invoice_reminders;
+CREATE POLICY "Users can manage own invoice reminders" ON invoice_reminders FOR ALL
+  USING (has_team_access(user_id)) WITH CHECK (user_id = tenant_id());
+
+DROP POLICY IF EXISTS "Users can manage own subscriptions" ON subscriptions;
+CREATE POLICY "Users can manage own subscriptions" ON subscriptions FOR ALL
+  USING (has_team_access(user_id)) WITH CHECK (user_id = tenant_id());
+
+DROP POLICY IF EXISTS "Users can manage own products" ON products;
+CREATE POLICY "Users can manage own products" ON products FOR ALL
+  USING (has_team_access(user_id)) WITH CHECK (user_id = tenant_id());
+
+DROP POLICY IF EXISTS "Users can manage own orders" ON orders;
+CREATE POLICY "Users can manage own orders" ON orders FOR ALL
+  USING (has_team_access(user_id)) WITH CHECK (user_id = tenant_id());
+
+DROP POLICY IF EXISTS "Users can manage own order items" ON order_items;
+CREATE POLICY "Users can manage own order items" ON order_items FOR ALL
+  USING (EXISTS (
+    SELECT 1 FROM orders
+    WHERE orders.id = order_items.order_id
+      AND has_team_access(orders.user_id)
+  ));
+
+DROP POLICY IF EXISTS "Users can manage own loyalty accounts" ON loyalty_accounts;
+CREATE POLICY "Users can manage own loyalty accounts" ON loyalty_accounts FOR ALL
+  USING (has_team_access(user_id)) WITH CHECK (user_id = tenant_id());
+
+DROP POLICY IF EXISTS "Users can manage own loyalty transactions" ON loyalty_transactions;
+CREATE POLICY "Users can manage own loyalty transactions" ON loyalty_transactions FOR ALL
+  USING (has_team_access(user_id)) WITH CHECK (user_id = tenant_id());
+
+DROP POLICY IF EXISTS "Users can manage own coupons" ON coupons;
+CREATE POLICY "Users can manage own coupons" ON coupons FOR ALL
+  USING (has_team_access(user_id)) WITH CHECK (user_id = tenant_id());
+
+DROP POLICY IF EXISTS "Users can manage own coupon redemptions" ON coupon_redemptions;
+CREATE POLICY "Users can manage own coupon redemptions" ON coupon_redemptions FOR ALL
+  USING (has_team_access(user_id)) WITH CHECK (user_id = tenant_id());

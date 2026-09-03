@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { parseAmountToMinor } from '@/lib/billing/money'
+import { resolveTenantUserId } from '@/lib/team/tenant'
 
 /**
  * Local mirror of the Meta Commerce Manager catalog.
@@ -19,6 +20,8 @@ export async function GET() {
   if (authError || !user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
+
+  const tenantId = await resolveTenantUserId(supabase, user.id)
 
   const { data, error } = await supabase
     .from('products')
@@ -39,6 +42,8 @@ export async function POST(request: Request) {
   if (authError || !user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
+
+  const tenantId = await resolveTenantUserId(supabase, user.id)
 
   const body = await request.json()
   const retailerId = body.retailer_id?.trim()
@@ -64,7 +69,7 @@ export async function POST(request: Request) {
     .from('products')
     .upsert(
       {
-        user_id: user.id,
+        user_id: tenantId,
         retailer_id: retailerId,
         catalog_id: body.catalog_id ?? null,
         name: body.name.trim(),
@@ -95,6 +100,8 @@ export async function DELETE(request: Request) {
   if (authError || !user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
+
+  const tenantId = await resolveTenantUserId(supabase, user.id)
 
   const { searchParams } = new URL(request.url)
   const id = searchParams.get('id')

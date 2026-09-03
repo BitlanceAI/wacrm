@@ -30,6 +30,7 @@ import {
  Loader2,
 } from "lucide-react";
 import { toast } from "sonner";
+import { useTenant } from '@/hooks/use-tenant';
 
 interface DealFormProps {
  open: boolean;
@@ -51,6 +52,8 @@ export function DealForm({
  onSaved,
 }: DealFormProps) {
  const supabase = createClient();
+
+ const { tenantId } = useTenant();
 
  const [title, setTitle] = useState("");
  const [value, setValue] = useState("");
@@ -187,7 +190,7 @@ export function DealForm({
  }
  const { error } = await supabase
  .from("deals")
- .insert({ ...payload, user_id: user.id, status: "open" });
+ .insert({ ...payload, user_id: tenantId, status: "open" });
  if (error) {
  toast.error("Failed to create deal");
  setSaving(false);

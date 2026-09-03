@@ -6,6 +6,7 @@ import {
   type CreateTemplateButton,
 } from '@/lib/whatsapp/meta-api'
 import { checkRateLimit, rateLimitResponse } from '@/lib/rate-limit'
+import { resolveTenantUserId } from '@/lib/team/tenant'
 
 /**
  * Create a template ON Meta (submit for review), then cache it locally.
@@ -58,9 +59,11 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
+    const tenantId = await resolveTenantUserId(supabase, user.id)
+
     // Meta caps template creation at 100/hour per WABA; a human
     // authoring templates never approaches 10/minute.
-    const limit = checkRateLimit(`template-create:${user.id}`, {
+    const limit = checkRateLimit(`template-create:${tenantId}`, {
       limit: 10,
       windowMs: 60_000,
     })
@@ -160,7 +163,7 @@ export async function POST(request: Request) {
     const { data: config } = await supabase
       .from('whatsapp_config')
       .select('waba_id, access_token')
-      .eq('user_id', user.id)
+      .eq('user_id', tenantId)
       .maybeSingle()
 
     if (!config?.waba_id || !config?.access_token) {
@@ -200,7 +203,7 @@ export async function POST(request: Request) {
     const localStatus =
       created.status?.toUpperCase() === 'APPROVED' ? 'Approved' : 'Pending'
     const { error: insertErr } = await supabase.from('message_templates').insert({
-      user_id: user.id,
+      user_id: tenantId,
       waba_id: config.waba_id,
       name,
       language,

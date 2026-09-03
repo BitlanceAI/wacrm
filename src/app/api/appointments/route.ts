@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { planReminders, defaultReminderText } from '@/lib/appointments/scheduling'
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from '@/lib/rate-limit'
+import { resolveTenantUserId } from '@/lib/team/tenant'
 
 /**
  * Appointments collection endpoint.
@@ -38,6 +39,8 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
+  const tenantId = await resolveTenantUserId(supabase, user.id)
+
   const { searchParams } = new URL(request.url)
   const status = searchParams.get('status')
   const contactId = searchParams.get('contact_id')
@@ -73,7 +76,9 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const limit = checkRateLimit(`appointments:${user.id}`, RATE_LIMITS.send)
+    const tenantId = await resolveTenantUserId(supabase, user.id)
+
+    const limit = checkRateLimit(`appointments:${tenantId}`, RATE_LIMITS.send)
     if (!limit.success) return rateLimitResponse(limit)
 
     const body = (await request.json()) as CreateBody
@@ -106,7 +111,7 @@ export async function POST(request: Request) {
     const { data: appointment, error: insertError } = await supabase
       .from('appointments')
       .insert({
-        user_id: user.id,
+        user_id: tenantId,
         contact_id: body.contact_id,
         conversation_id: body.conversation_id ?? null,
         title: body.title.trim(),
@@ -132,7 +137,7 @@ export async function POST(request: Request) {
       const useTemplate = Boolean(body.reminder_template_name)
       const rows = planned.map((p) => ({
         appointment_id: appointment.id,
-        user_id: user.id,
+        user_id: tenantId,
         send_at: p.send_at,
         offset_minutes: p.offset_minutes,
         channel: useTemplate ? 'template' : 'text',

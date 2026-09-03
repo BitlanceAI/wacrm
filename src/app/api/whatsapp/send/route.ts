@@ -15,6 +15,7 @@ import {
  RATE_LIMITS,
 } from '@/lib/rate-limit'
 import { outboundPatch } from '@/lib/conversations/response-metrics'
+import { resolveTenantUserId } from '@/lib/team/tenant'
 
 export async function POST(request: Request) {
  try {
@@ -32,9 +33,11 @@ export async function POST(request: Request) {
  )
  }
 
+ const tenantId = await resolveTenantUserId(supabase, user.id)
+
  // Per-user rate limit. Bucket key is scoped to this route so
  // `/broadcast` has an independent budget.
- const limit = checkRateLimit(`send:${user.id}`, RATE_LIMITS.send)
+ const limit = checkRateLimit(`send:${tenantId}`, RATE_LIMITS.send)
  if (!limit.success) {
  return rateLimitResponse(limit)
  }
@@ -77,7 +80,7 @@ export async function POST(request: Request) {
  .from('conversations')
  .select('*, contact:contacts(*)')
  .eq('id', conversation_id)
- .eq('user_id', user.id)
+ .eq('user_id', tenantId)
  .single()
 
  if (convError || !conversation) {
@@ -108,7 +111,7 @@ export async function POST(request: Request) {
  const { data: config, error: configError } = await supabase
  .from('whatsapp_config')
  .select('*')
- .eq('user_id', user.id)
+ .eq('user_id', tenantId)
  .single()
 
  if (configError || !config) {
@@ -304,7 +307,7 @@ export async function POST(request: Request) {
  ended_at: new Date().toISOString(),
  end_reason: 'agent_replied',
  })
- .eq('user_id', user.id)
+ .eq('user_id', tenantId)
  .eq('contact_id', contact.id)
  .eq('status', 'active')
  if (pauseErr) {

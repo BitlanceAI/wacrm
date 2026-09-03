@@ -36,6 +36,7 @@ import {
     BellOff,
     Megaphone,
 } from 'lucide-react';
+import { useTenant } from '@/hooks/use-tenant';
 
 interface ContactDetailViewProps {
     open: boolean;
@@ -51,6 +52,8 @@ export function ContactDetailView({
     onUpdated,
 }: ContactDetailViewProps) {
     const supabase = createClient();
+
+    const { tenantId } = useTenant();
 
     const [contact, setContact] = useState<Contact | null>(null);
     const [loading, setLoading] = useState(false);
@@ -257,7 +260,7 @@ export function ContactDetailView({
 
         const { error } = await supabase.from('contact_notes').insert({
             contact_id: contactId,
-            user_id: user.id,
+            user_id: tenantId,
             note_text: newNote.trim(),
         });
 

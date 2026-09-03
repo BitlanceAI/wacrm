@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { buildUpiLink } from '@/lib/billing/invoice'
+import { resolveTenantUserId } from '@/lib/team/tenant'
 
 /**
  * Raise an invoice from a captured order.
@@ -25,6 +26,8 @@ export async function POST(
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
+    const tenantId = await resolveTenantUserId(supabase, user.id)
+
     const { data: order, error: findError } = await supabase
       .from('orders')
       .select('*, items:order_items(*)')
@@ -48,7 +51,7 @@ export async function POST(
 
     const { data: number, error: numberError } = await supabase.rpc(
       'next_invoice_number',
-      { p_user_id: user.id }
+      { p_user_id: tenantId }
     )
     if (numberError || !number) {
       return NextResponse.json(
@@ -60,7 +63,7 @@ export async function POST(
     const { data: settings } = await supabase
       .from('billing_settings')
       .select('upi_vpa, upi_payee_name')
-      .eq('user_id', user.id)
+      .eq('user_id', tenantId)
       .maybeSingle()
 
     const items = (order.items ?? []) as { name?: string | null; quantity: number }[]
@@ -72,7 +75,7 @@ export async function POST(
     const { data: invoice, error: insertError } = await supabase
       .from('invoices')
       .insert({
-        user_id: user.id,
+        user_id: tenantId,
         contact_id: order.contact_id,
         conversation_id: order.conversation_id,
         number,

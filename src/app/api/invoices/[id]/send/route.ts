@@ -4,6 +4,7 @@ import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { engineSendText } from '@/lib/automations/meta-send'
 import { invoiceMessage } from '@/lib/billing/invoice'
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from '@/lib/rate-limit'
+import { resolveTenantUserId } from '@/lib/team/tenant'
 
 /**
  * Send an invoice to its contact on WhatsApp.
@@ -28,7 +29,9 @@ export async function POST(
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const limit = checkRateLimit(`invoice-send:${user.id}`, RATE_LIMITS.send)
+    const tenantId = await resolveTenantUserId(supabase, user.id)
+
+    const limit = checkRateLimit(`invoice-send:${tenantId}`, RATE_LIMITS.send)
     if (!limit.success) return rateLimitResponse(limit)
 
     const { data: invoice, error: findError } = await supabase
@@ -49,7 +52,7 @@ export async function POST(
     const { data: settings } = await supabase
       .from('billing_settings')
       .select('payment_instructions')
-      .eq('user_id', user.id)
+      .eq('user_id', tenantId)
       .maybeSingle()
 
     // The invoice needs a thread to land in. A contact who has never

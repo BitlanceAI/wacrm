@@ -6,6 +6,7 @@ import {
   discountForOrder,
   normalizeCouponCode,
 } from '@/lib/retention/loyalty'
+import { resolveTenantUserId } from '@/lib/team/tenant'
 
 /**
  * Redeem a coupon, optionally against an order.
@@ -27,6 +28,8 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
+    const tenantId = await resolveTenantUserId(supabase, user.id)
+
     const body = await request.json()
     const code = normalizeCouponCode(body.code ?? '')
     if (!code) {
@@ -36,7 +39,7 @@ export async function POST(request: Request) {
     const { data: coupon, error: findError } = await supabase
       .from('coupons')
       .select('*')
-      .eq('user_id', user.id)
+      .eq('user_id', tenantId)
       .eq('code', code)
       .maybeSingle()
     if (findError || !coupon) {
@@ -77,7 +80,7 @@ export async function POST(request: Request) {
       .from('coupon_redemptions')
       .insert({
         coupon_id: coupon.id,
-        user_id: user.id,
+        user_id: tenantId,
         contact_id: body.contact_id ?? null,
         order_id: orderId,
         discount_applied_minor: discount,

@@ -20,6 +20,7 @@ import {
 } from '@/components/ui/dialog';
 import { normalizeShortcut, isValidShortcut } from '@/lib/canned-replies/match';
 import type { CannedReply } from '@/types';
+import { useTenant } from '@/hooks/use-tenant';
 
 /**
  * Quick replies = local text snippets the inbox composer inserts when
@@ -31,6 +32,7 @@ import type { CannedReply } from '@/types';
 export function CannedReplyManager() {
     const supabase = createClient();
     const { user, loading: authLoading } = useAuth();
+    const { tenantId } = useTenant();
 
     const [loading, setLoading] = useState(true);
     const [replies, setReplies] = useState<CannedReply[]>([]);
@@ -98,7 +100,7 @@ export function CannedReplyManager() {
 
         setSaving(true);
         const payload = {
-            user_id: user.id,
+            user_id: tenantId,
             shortcut: normalized,
             title: title.trim(),
             body: body.trim(),

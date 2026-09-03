@@ -71,7 +71,6 @@ export function WhatsAppConfig() {
  const { data, error } = await supabase
  .from('whatsapp_config')
  .select('*')
- .eq('user_id', userId)
  .maybeSingle();
 
  if (error) {

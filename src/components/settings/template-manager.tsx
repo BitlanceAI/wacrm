@@ -49,7 +49,6 @@ export function TemplateManager() {
  supabase
  .from('whatsapp_config')
  .select('waba_id')
- .eq('user_id', user.id)
  .maybeSingle()
  .then(({ data }) => setWabaId(data?.waba_id ?? null));
  // Background: if the cached copy is stale, pull fresh templates from
@@ -67,7 +66,6 @@ export function TemplateManager() {
  const { data, error } = await supabase
  .from('message_templates')
  .select('*')
- .eq('user_id', userId)
  .order('created_at', { ascending: false });
 
  if (error) throw error;

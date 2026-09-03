@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { resolveTenantUserId } from '@/lib/team/tenant'
 
 /**
  * Loyalty accounts and point movements.
@@ -17,6 +18,8 @@ export async function GET(request: Request) {
   if (authError || !user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
+
+  const tenantId = await resolveTenantUserId(supabase, user.id)
 
   const { searchParams } = new URL(request.url)
   const contactId = searchParams.get('contact_id')
@@ -43,6 +46,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
+  const tenantId = await resolveTenantUserId(supabase, user.id)
+
   const body = await request.json()
   const points = Number(body.points)
   if (!body.contact_id || !Number.isInteger(points) || points === 0) {
@@ -62,7 +67,7 @@ export async function POST(request: Request) {
   const { data: account, error: accountError } = await supabase
     .from('loyalty_accounts')
     .upsert(
-      { user_id: user.id, contact_id: body.contact_id },
+      { user_id: tenantId, contact_id: body.contact_id },
       { onConflict: 'user_id,contact_id', ignoreDuplicates: false }
     )
     .select('id, points_balance')
@@ -79,7 +84,7 @@ export async function POST(request: Request) {
     .from('loyalty_transactions')
     .insert({
       account_id: account.id,
-      user_id: user.id,
+      user_id: tenantId,
       points,
       reason: body.reason.trim(),
       reference: body.reference ?? null,

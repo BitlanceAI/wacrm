@@ -8,6 +8,7 @@ import {
   DEFAULT_DUNNING_OFFSETS_DAYS,
 } from '@/lib/billing/invoice'
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from '@/lib/rate-limit'
+import { resolveTenantUserId } from '@/lib/team/tenant'
 
 /**
  * Invoices collection.
@@ -27,6 +28,8 @@ export async function GET(request: Request) {
   if (authError || !user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
+
+  const tenantId = await resolveTenantUserId(supabase, user.id)
 
   const { searchParams } = new URL(request.url)
   const status = searchParams.get('status')
@@ -59,7 +62,9 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const limit = checkRateLimit(`invoices:${user.id}`, RATE_LIMITS.send)
+    const tenantId = await resolveTenantUserId(supabase, user.id)
+
+    const limit = checkRateLimit(`invoices:${tenantId}`, RATE_LIMITS.send)
     if (!limit.success) return rateLimitResponse(limit)
 
     const body = await request.json()
@@ -93,12 +98,12 @@ export async function POST(request: Request) {
     const { data: settings } = await supabase
       .from('billing_settings')
       .select('*')
-      .eq('user_id', user.id)
+      .eq('user_id', tenantId)
       .maybeSingle()
 
     const { data: number, error: numberError } = await supabase.rpc(
       'next_invoice_number',
-      { p_user_id: user.id }
+      { p_user_id: tenantId }
     )
     if (numberError || !number) {
       return NextResponse.json(
@@ -121,7 +126,7 @@ export async function POST(request: Request) {
     const { data: invoice, error: insertError } = await supabase
       .from('invoices')
       .insert({
-        user_id: user.id,
+        user_id: tenantId,
         contact_id,
         number,
         description: description.trim(),
@@ -152,7 +157,7 @@ export async function POST(request: Request) {
     if (planned.length > 0) {
       const rows = planned.map((p) => ({
         invoice_id: invoice.id,
-        user_id: user.id,
+        user_id: tenantId,
         send_at: p.send_at,
         offset_days: p.offset_days,
         channel: 'text' as const,

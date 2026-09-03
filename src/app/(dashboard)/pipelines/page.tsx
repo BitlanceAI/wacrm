@@ -26,6 +26,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { GitBranch, Plus, ChevronDown, Settings } from "lucide-react";
 import { toast } from "sonner";
+import { useTenant } from '@/hooks/use-tenant';
 
 // Spec-defined seed — name and color per the product spec.
 const SPEC_DEFAULT_STAGES = [
@@ -38,6 +39,8 @@ const SPEC_DEFAULT_STAGES = [
 
 export default function PipelinesPage() {
  const supabase = createClient();
+
+ const { tenantId } = useTenant();
 
  const [pipelines, setPipelines] = useState<Pipeline[]>([]);
  const [selectedPipelineId, setSelectedPipelineId] = useState<string>("");
@@ -105,7 +108,7 @@ export default function PipelinesPage() {
 
  const { data: pipeline, error } = await supabase
  .from("pipelines")
- .insert({ user_id: user.id, name: "Sales Pipeline" })
+ .insert({ user_id: tenantId, name: "Sales Pipeline" })
  .select()
  .single();
 
@@ -248,7 +251,7 @@ export default function PipelinesPage() {
 
  const { data: pipeline, error } = await supabase
  .from("pipelines")
- .insert({ user_id: user.id, name })
+ .insert({ user_id: tenantId, name })
  .select()
  .single();
 

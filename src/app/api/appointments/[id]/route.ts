@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { planReminders, defaultReminderText } from '@/lib/appointments/scheduling'
+import { resolveTenantUserId } from '@/lib/team/tenant'
 
 /**
  * Single appointment: update (including reschedule) and delete.
@@ -25,6 +26,8 @@ export async function PATCH(
     if (authError || !user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
+
+    const tenantId = await resolveTenantUserId(supabase, user.id)
 
     const body = await request.json()
 
@@ -102,7 +105,7 @@ export async function PATCH(
         const contact = existing.contact as { name?: string | null } | null
         const rows = planned.map((p) => ({
           appointment_id: id,
-          user_id: user.id,
+          user_id: tenantId,
           send_at: p.send_at,
           offset_minutes: p.offset_minutes,
           channel: first?.channel ?? 'text',
@@ -166,6 +169,8 @@ export async function DELETE(
   if (authError || !user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
+
+  const tenantId = await resolveTenantUserId(supabase, user.id)
 
   // Reminders cascade with the booking (FK ON DELETE CASCADE).
   const { error } = await supabase.from('appointments').delete().eq('id', id)

@@ -17,6 +17,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Loader2 } from 'lucide-react';
+import { useTenant } from '@/hooks/use-tenant';
 
 interface ContactFormProps {
     open: boolean;
@@ -35,6 +36,8 @@ export function ContactForm({
 }: ContactFormProps) {
     const supabase = createClient();
     const isEdit = !!contact;
+
+    const { tenantId } = useTenant();
 
     const [name, setName] = useState('');
     const [phone, setPhone] = useState('');
@@ -110,7 +113,7 @@ export function ContactForm({
                 const { data, error } = await supabase
                     .from('contacts')
                     .insert({
-                        user_id: user.id,
+                        user_id: tenantId,
                         name: name.trim() || null,
                         phone: phone.trim(),
                         email: email.trim() || null,

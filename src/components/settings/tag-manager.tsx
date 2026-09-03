@@ -18,6 +18,7 @@ import {
  DialogFooter,
 } from '@/components/ui/dialog';
 import type { Tag } from '@/types';
+import { useTenant } from '@/hooks/use-tenant';
 
 const PRESET_COLORS = [
  { name: 'Red', value: '#ef4444' },
@@ -33,6 +34,7 @@ const PRESET_COLORS = [
 export function TagManager() {
  const supabase = createClient();
  const { user, loading: authLoading } = useAuth();
+ const { tenantId } = useTenant();
 
  const [loading, setLoading] = useState(true);
  const [tags, setTags] = useState<Tag[]>([]);
@@ -61,7 +63,6 @@ export function TagManager() {
  const { data, error } = await supabase
  .from('tags')
  .select('*')
- .eq('user_id', userId)
  .order('created_at', { ascending: true });
 
  if (error) throw error;
@@ -90,7 +91,7 @@ export function TagManager() {
  const { error } = await supabase
  .from('tags')
  .insert({
- user_id: user.id,
+ user_id: tenantId,
  name: newTagName.trim(),
  color: selectedColor,
  });

@@ -4,6 +4,7 @@ import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { engineSendInteractiveList } from '@/lib/flows/meta-send'
 import { csatSections } from '@/lib/support/csat'
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from '@/lib/rate-limit'
+import { resolveTenantUserId } from '@/lib/team/tenant'
 
 /**
  * Send the post-resolution CSAT survey for one conversation.
@@ -30,7 +31,9 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const limit = checkRateLimit(`csat:${user.id}`, RATE_LIMITS.send)
+    const tenantId = await resolveTenantUserId(supabase, user.id)
+
+    const limit = checkRateLimit(`csat:${tenantId}`, RATE_LIMITS.send)
     if (!limit.success) return rateLimitResponse(limit)
 
     const { conversation_id } = await request.json()
@@ -61,7 +64,7 @@ export async function POST(request: Request) {
     const { data: settings } = await supabase
       .from('inbox_settings')
       .select('csat_enabled, csat_question')
-      .eq('user_id', user.id)
+      .eq('user_id', tenantId)
       .maybeSingle()
     if (!settings?.csat_enabled) {
       return NextResponse.json({ sent: false, reason: 'disabled' })
@@ -86,7 +89,7 @@ export async function POST(request: Request) {
     const { data: row, error: insertError } = await admin
       .from('csat_responses')
       .insert({
-        user_id: user.id,
+        user_id: tenantId,
         conversation_id,
         contact_id: conversation.contact_id,
       })

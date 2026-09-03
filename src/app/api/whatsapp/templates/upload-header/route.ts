@@ -3,6 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { decrypt } from '@/lib/whatsapp/encryption'
 import { uploadTemplateHeaderMedia } from '@/lib/whatsapp/meta-api'
 import { checkRateLimit, rateLimitResponse } from '@/lib/rate-limit'
+import { resolveTenantUserId } from '@/lib/team/tenant'
 
 /**
  * Upload a header media file for template creation, returning Meta's
@@ -36,7 +37,9 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const limit = checkRateLimit(`template-upload:${user.id}`, {
+    const tenantId = await resolveTenantUserId(supabase, user.id)
+
+    const limit = checkRateLimit(`template-upload:${tenantId}`, {
       limit: 10,
       windowMs: 60_000,
     })
@@ -74,7 +77,7 @@ export async function POST(request: Request) {
     const { data: config } = await supabase
       .from('whatsapp_config')
       .select('access_token')
-      .eq('user_id', user.id)
+      .eq('user_id', tenantId)
       .maybeSingle()
     if (!config?.access_token) {
       return NextResponse.json(

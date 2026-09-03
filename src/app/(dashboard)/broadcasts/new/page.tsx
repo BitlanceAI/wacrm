@@ -10,6 +10,7 @@ import { Step2SelectAudience } from '@/components/broadcasts/step2-select-audien
 import { Step3Personalize } from '@/components/broadcasts/step3-personalize';
 import { Step4ScheduleSend } from '@/components/broadcasts/step4-schedule-send';
 import { useBroadcastSending } from '@/hooks/use-broadcast-sending';
+import { resolveTenantUserId } from '@/lib/team/tenant';
 import { Check } from 'lucide-react';
 import { ConnectRequiredBanner } from '@/components/whatsapp/connect-required-banner';
 
@@ -98,8 +99,9 @@ export default function NewBroadcastPage() {
  return;
  }
 
+ const tenantId = await resolveTenantUserId(supabase, user.id);
  const { error } = await supabase.from('broadcasts').insert({
- user_id: user.id,
+ user_id: tenantId,
  name: name.trim(),
  template_name: template.name,
  template_language: template.language ?? 'en_US',

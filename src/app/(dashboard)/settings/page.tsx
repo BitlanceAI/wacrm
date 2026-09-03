@@ -2,11 +2,12 @@
 
 import { useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Settings, Tag, User, Zap, Headphones, IndianRupee, Code2 } from 'lucide-react';
+import { Settings, Tag, User, Zap, Headphones, IndianRupee, Code2, Users } from 'lucide-react';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { WhatsAppConfig } from '@/components/settings/whatsapp-config';
 import { TagManager } from '@/components/settings/tag-manager';
 import { DeveloperPanel } from '@/components/settings/developer-panel';
+import { TeamPanel } from '@/components/settings/team-panel';
 import { ProfileForm } from '@/components/settings/profile-form';
 import { PasswordForm } from '@/components/settings/password-form';
 import { SessionsCard } from '@/components/settings/sessions-card';
@@ -18,6 +19,7 @@ const TAB_VALUES = [
  'profile',
  'whatsapp',
  'tags',
+ 'team',
  'developers',
  'quick-replies',
  'support',
@@ -89,6 +91,13 @@ export default function SettingsPage() {
  Tags
  </TabsTrigger>
  <TabsTrigger
+ value="team"
+ className="data-active:bg-accent data-active:text-primary text-muted-foreground"
+ >
+ <Users className="size-4" />
+ Team
+ </TabsTrigger>
+ <TabsTrigger
  value="developers"
  className="data-active:bg-accent data-active:text-primary text-muted-foreground"
  >
@@ -130,6 +139,10 @@ export default function SettingsPage() {
 
  <TabsContent value="tags">
  <TagManager />
+ </TabsContent>
+
+ <TabsContent value="team">
+ <TeamPanel />
  </TabsContent>
 
  <TabsContent value="developers">

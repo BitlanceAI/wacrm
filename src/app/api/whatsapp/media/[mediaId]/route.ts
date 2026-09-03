@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api'
 import { decrypt } from '@/lib/whatsapp/encryption'
+import { resolveTenantUserId } from '@/lib/team/tenant'
 
 export async function GET(
  request: Request,
@@ -31,11 +32,13 @@ export async function GET(
  )
  }
 
+ const tenantId = await resolveTenantUserId(supabase, user.id)
+
  // Fetch and decrypt WhatsApp config
  const { data: config, error: configError } = await supabase
  .from('whatsapp_config')
  .select('*')
- .eq('user_id', user.id)
+ .eq('user_id', tenantId)
  .single()
 
  if (configError || !config) {

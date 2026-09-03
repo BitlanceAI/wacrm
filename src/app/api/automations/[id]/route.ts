@@ -10,6 +10,7 @@ import {
  validateStepsForActivation,
  validateTriggerForActivation,
 } from '@/lib/automations/validate'
+import { resolveTenantUserId } from '@/lib/team/tenant'
 
 async function requireUser() {
  const supabase = await createClient()
@@ -26,13 +27,14 @@ export async function GET(
  const { id } = await params
  const user = await requireUser()
  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+ const tenantId = await resolveTenantUserId(supabaseAdmin(), user.id)
 
  const admin = supabaseAdmin()
  const { data: automation, error } = await admin
  .from('automations')
  .select('*')
  .eq('id', id)
- .eq('user_id', user.id)
+ .eq('user_id', tenantId)
  .maybeSingle()
 
  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
@@ -49,6 +51,7 @@ export async function PATCH(
  const { id } = await params
  const user = await requireUser()
  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+ const tenantId = await resolveTenantUserId(supabaseAdmin(), user.id)
 
  const body = await request.json().catch(() => null)
  if (!body) {
@@ -131,12 +134,13 @@ export async function DELETE(
  const { id } = await params
  const user = await requireUser()
  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+ const tenantId = await resolveTenantUserId(supabaseAdmin(), user.id)
 
  const { error } = await supabaseAdmin()
  .from('automations')
  .delete()
  .eq('id', id)
- .eq('user_id', user.id)
+ .eq('user_id', tenantId)
  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
  return NextResponse.json({ ok: true })
 }

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { supabaseAdmin } from '@/lib/automations/admin-client'
+import { resolveTenantUserId } from '@/lib/team/tenant'
 
 export async function POST(
  _request: Request,
@@ -12,13 +13,14 @@ export async function POST(
  data: { user },
  } = await supabase.auth.getUser()
  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+ const tenantId = await resolveTenantUserId(supabase, user.id)
 
  const admin = supabaseAdmin()
  const { data: original, error: origErr } = await admin
  .from('automations')
  .select('*')
  .eq('id', id)
- .eq('user_id', user.id)
+ .eq('user_id', tenantId)
  .maybeSingle()
  if (origErr) return NextResponse.json({ error: origErr.message }, { status: 500 })
  if (!original) return NextResponse.json({ error: 'Not found' }, { status: 404 })
@@ -26,7 +28,7 @@ export async function POST(
  const { data: copy, error: copyErr } = await admin
  .from('automations')
  .insert({
- user_id: user.id,
+ user_id: tenantId,
  name: `${original.name} (Copy)`,
  description: original.description,
  trigger_type: original.trigger_type,

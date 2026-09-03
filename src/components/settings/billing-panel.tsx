@@ -12,6 +12,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Card, CardContent } from '@/components/ui/card';
 import { SUPPORTED_CURRENCIES } from '@/lib/billing/money';
 import { buildUpiLink } from '@/lib/billing/invoice';
+import { useTenant } from '@/hooks/use-tenant';
 
 interface BillingSettings {
     currency: string;
@@ -39,6 +40,7 @@ const DEFAULTS: BillingSettings = {
 export function BillingPanel() {
     const supabase = createClient();
     const { user, loading: authLoading } = useAuth();
+    const { tenantId } = useTenant();
 
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
@@ -54,7 +56,6 @@ export function BillingPanel() {
             const { data, error } = await supabase
                 .from('billing_settings')
                 .select('*')
-                .eq('user_id', user.id)
                 .maybeSingle();
             setLoading(false);
             if (error) {
@@ -84,7 +85,7 @@ export function BillingPanel() {
         setSaving(true);
         const { error } = await supabase.from('billing_settings').upsert(
             {
-                user_id: user.id,
+                user_id: tenantId,
                 ...settings,
                 upi_vpa: settings.upi_vpa.trim() || null,
                 upi_payee_name: settings.upi_payee_name.trim() || null,

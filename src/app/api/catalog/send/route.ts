@@ -13,6 +13,7 @@ import {
 } from '@/lib/whatsapp/phone-utils'
 import { botOutboundPatch } from '@/lib/conversations/response-metrics'
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from '@/lib/rate-limit'
+import { resolveTenantUserId } from '@/lib/team/tenant'
 
 /**
  * Send a catalog card, a single product, or a curated product list into
@@ -40,7 +41,9 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const limit = checkRateLimit(`catalog-send:${user.id}`, RATE_LIMITS.send)
+    const tenantId = await resolveTenantUserId(supabase, user.id)
+
+    const limit = checkRateLimit(`catalog-send:${tenantId}`, RATE_LIMITS.send)
     if (!limit.success) return rateLimitResponse(limit)
 
     const body = await request.json()
@@ -86,7 +89,7 @@ export async function POST(request: Request) {
     const { data: config, error: configError } = await supabase
       .from('whatsapp_config')
       .select('*')
-      .eq('user_id', user.id)
+      .eq('user_id', tenantId)
       .single()
     if (configError || !config) {
       return NextResponse.json(

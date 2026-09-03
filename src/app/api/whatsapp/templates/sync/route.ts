@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { decrypt } from '@/lib/whatsapp/encryption'
 import { checkRateLimit, rateLimitResponse } from '@/lib/rate-limit'
+import { resolveTenantUserId } from '@/lib/team/tenant'
 
 /**
  * Sync message templates from Meta → local message_templates table.
@@ -104,13 +105,15 @@ export async function POST() {
  return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
  }
 
+ const tenantId = await resolveTenantUserId(supabase, user.id)
+
  // Meta budgets management-endpoint calls per WABA per hour (200 for
  // inactive WABAs, 5000 for active ones — shared across everything
  // this app does to that WABA). Each sync spends up to PAGE_CAP
  // requests, and the client triggers syncs from several surfaces
  // (settings, wizard, staleness checks in every open tab), so cap the
  // burn server-side rather than trusting per-browser localStorage.
- const limit = checkRateLimit(`tpl-sync:${user.id}`, {
+ const limit = checkRateLimit(`tpl-sync:${tenantId}`, {
  limit: 12,
  windowMs: 60 * 60 * 1000,
  })
@@ -122,7 +125,7 @@ export async function POST() {
  const { data: config, error: configError } = await supabase
  .from('whatsapp_config')
  .select('*')
- .eq('user_id', user.id)
+ .eq('user_id', tenantId)
  .single()
 
  if (configError || !config) {
@@ -198,7 +201,7 @@ export async function POST() {
  const footer = (t.components ?? []).find((c) => c.type === 'FOOTER')
 
  const row = {
- user_id: user.id,
+ user_id: tenantId,
  // Stamp the account this came from so a later sync can tell
  // "belongs to the connected WABA" from "left over from the one
  // we used to be connected to".
@@ -217,7 +220,7 @@ export async function POST() {
  const { data: existing, error: lookupErr } = await supabase
  .from('message_templates')
  .select('id')
- .eq('user_id', user.id)
+ .eq('user_id', tenantId)
  .eq('name', t.name)
  .eq('language', t.language)
  .maybeSingle()
@@ -288,7 +291,7 @@ export async function POST() {
  const { data: locals, error: scanErr } = await supabase
  .from('message_templates')
  .select('id, waba_id, status')
- .eq('user_id', user.id)
+ .eq('user_id', tenantId)
 
  if (scanErr) {
  console.error('[templates/sync] stray scan failed:', scanErr.message)

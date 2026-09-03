@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { parseAmountToMinor } from '@/lib/billing/money'
 import { normalizeCouponCode } from '@/lib/retention/loyalty'
+import { resolveTenantUserId } from '@/lib/team/tenant'
 
 /**
  * Coupon definitions. Redemption lives in /api/coupons/redeem, since
@@ -17,6 +18,8 @@ export async function GET() {
   if (authError || !user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
+
+  const tenantId = await resolveTenantUserId(supabase, user.id)
 
   const { data, error } = await supabase
     .from('coupons')
@@ -37,6 +40,8 @@ export async function POST(request: Request) {
   if (authError || !user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
+
+  const tenantId = await resolveTenantUserId(supabase, user.id)
 
   const body = await request.json()
   const code = normalizeCouponCode(body.code ?? '')
@@ -75,7 +80,7 @@ export async function POST(request: Request) {
   const { data, error } = await supabase
     .from('coupons')
     .insert({
-      user_id: user.id,
+      user_id: tenantId,
       code,
       description: body.description ?? null,
       discount_type: type,
@@ -113,6 +118,8 @@ export async function PATCH(request: Request) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
+  const tenantId = await resolveTenantUserId(supabase, user.id)
+
   const body = await request.json()
   if (!body.id) {
     return NextResponse.json({ error: 'id is required' }, { status: 400 })
@@ -143,6 +150,8 @@ export async function DELETE(request: Request) {
   if (authError || !user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
+
+  const tenantId = await resolveTenantUserId(supabase, user.id)
 
   const { searchParams } = new URL(request.url)
   const id = searchParams.get('id')

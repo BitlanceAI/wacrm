@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { wabaHasPaymentMethod, verifyPhoneNumber, subscribeWabaToApp } from '@/lib/whatsapp/meta-api'
 import { encrypt, decrypt } from '@/lib/whatsapp/encryption'
+import { resolveTenantUserId } from '@/lib/team/tenant'
 
 /**
  * GET /api/whatsapp/config
@@ -29,10 +30,11 @@ export async function GET() {
  return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
  }
 
+ const tenantId = await resolveTenantUserId(supabase, user.id)
  const { data: config, error: configError } = await supabase
  .from('whatsapp_config')
  .select('phone_number_id, waba_id, access_token, status')
- .eq('user_id', user.id)
+ .eq('user_id', tenantId)
  .maybeSingle()
 
  if (configError) {
@@ -128,6 +130,16 @@ export async function POST(request: Request) {
 
  if (authError || !user) {
  return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+ }
+
+ // Connection management is owner-only: the config row carries the
+ // encrypted token and drives webhook routing for the whole tenant.
+ const tenantId = await resolveTenantUserId(supabase, user.id)
+ if (tenantId !== user.id) {
+ return NextResponse.json(
+ { error: 'Only the workspace owner can manage the WhatsApp connection.' },
+ { status: 403 }
+ )
  }
 
  const body = await request.json()

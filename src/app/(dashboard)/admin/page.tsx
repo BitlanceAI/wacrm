@@ -49,7 +49,15 @@ export default async function AdminPage() {
             Platform overview and tenant management.
           </p>
         </div>
-        <CreateUserModal />
+        <div className="flex items-center gap-2">
+          <a
+            href="/admin/pricing"
+            className="inline-flex items-center rounded-lg border border-border px-3 py-1.5 text-sm text-foreground transition-colors hover:bg-accent"
+          >
+            Manage Pricing
+          </a>
+          <CreateUserModal />
+        </div>
       </div>
 
       {/* ── Platform overview ─────────────────────────────────── */}
