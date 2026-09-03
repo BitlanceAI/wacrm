@@ -11,6 +11,7 @@ import { Step3Personalize } from '@/components/broadcasts/step3-personalize';
 import { Step4ScheduleSend } from '@/components/broadcasts/step4-schedule-send';
 import { useBroadcastSending } from '@/hooks/use-broadcast-sending';
 import { Check } from 'lucide-react';
+import { ConnectRequiredBanner } from '@/components/whatsapp/connect-required-banner';
 
 const steps = [
  { label: 'Template', key: 'template' },
@@ -126,6 +127,7 @@ export default function NewBroadcastPage() {
 
  return (
  <div className="mx-auto max-w-3xl space-y-8">
+ <ConnectRequiredBanner />
  {/* Header */}
  <div>
  <h1 className="text-2xl font-bold text-foreground">New Broadcast</h1>

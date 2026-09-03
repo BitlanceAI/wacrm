@@ -30,6 +30,7 @@ import {
     formatAppointmentTime,
 } from '@/lib/appointments/scheduling';
 import type { Appointment, AppointmentStatus, Contact } from '@/types';
+import { ConnectRequiredBanner } from '@/components/whatsapp/connect-required-banner';
 
 const STATUS_STYLES: Record<AppointmentStatus, string> = {
     scheduled: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
@@ -193,6 +194,7 @@ export default function AppointmentsPage() {
 
     return (
         <div className="space-y-5">
+            <ConnectRequiredBanner />
             <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                     <div className="flex items-center gap-2">

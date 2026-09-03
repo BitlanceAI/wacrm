@@ -1,6 +1,7 @@
 'use client';
 
 import { TemplateManager } from '@/components/settings/template-manager';
+import { ConnectRequiredBanner } from '@/components/whatsapp/connect-required-banner';
 
 /**
  * Standalone Templates page. The manager used to live only as a tab
@@ -11,6 +12,7 @@ import { TemplateManager } from '@/components/settings/template-manager';
 export default function TemplatesPage() {
   return (
     <div className="space-y-6">
+            <ConnectRequiredBanner />
       <TemplateManager />
     </div>
   );

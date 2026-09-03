@@ -26,6 +26,7 @@ import {
 import { cn } from '@/lib/utils';
 import { formatMoney } from '@/lib/billing/money';
 import { ORDER_STATUSES, type OrderStatus } from '@/lib/commerce/order';
+import { ConnectRequiredBanner } from '@/components/whatsapp/connect-required-banner';
 
 interface Product {
     id: string;
@@ -174,6 +175,7 @@ export default function CatalogPage() {
 
     return (
         <div className="space-y-5">
+            <ConnectRequiredBanner />
             <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                     <h1 className="text-2xl font-bold text-foreground">Catalog & Orders</h1>

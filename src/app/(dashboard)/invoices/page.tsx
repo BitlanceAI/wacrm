@@ -30,6 +30,7 @@ import { formatMoney } from '@/lib/billing/money';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { SubscriptionsPanel } from '@/components/billing/subscriptions-panel';
 import type { Contact, Invoice, InvoiceStatus } from '@/types';
+import { ConnectRequiredBanner } from '@/components/whatsapp/connect-required-banner';
 
 const STATUS_STYLES: Record<InvoiceStatus, string> = {
     draft: 'bg-slate-500/10 text-muted-foreground border-border',
@@ -181,6 +182,7 @@ export default function InvoicesPage() {
 
     return (
         <div className="space-y-5">
+            <ConnectRequiredBanner />
             <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                     <h1 className="text-2xl font-bold text-foreground">Invoices</h1>

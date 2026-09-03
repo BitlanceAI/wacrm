@@ -15,6 +15,7 @@ import {
 } from '@/components/ui/table';
 import { Radio, Plus, Loader2 } from 'lucide-react';
 import { getBroadcastStatus } from '@/lib/broadcast-status';
+import { ConnectRequiredBanner } from '@/components/whatsapp/connect-required-banner';
 
 /**
  * Poll cadence while any broadcast is sending. Kept modest so we don't
@@ -146,6 +147,7 @@ export default function BroadcastsPage() {
 
  return (
  <div className="space-y-6">
+ <ConnectRequiredBanner />
  {/* Top indeterminate progress bar: only visible while a broadcast
  is mid-send. Pure CSS animation so no extra deps. */}
  {anySending && (

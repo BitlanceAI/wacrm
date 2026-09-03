@@ -26,6 +26,7 @@ import {
     normalizeCouponCode,
 } from '@/lib/retention/loyalty';
 import type { Contact } from '@/types';
+import { ConnectRequiredBanner } from '@/components/whatsapp/connect-required-banner';
 
 interface LoyaltyAccount {
     id: string;
@@ -200,6 +201,7 @@ export default function LoyaltyPage() {
 
     return (
         <div className="space-y-5">
+            <ConnectRequiredBanner />
             <div>
                 <h1 className="text-2xl font-bold text-foreground">Loyalty & Coupons</h1>
                 <p className="mt-1 text-sm text-muted-foreground">
