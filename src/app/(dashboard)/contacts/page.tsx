@@ -40,6 +40,7 @@ import {
  Users,
  ChevronLeft,
  ChevronRight,
+ BellOff,
 } from 'lucide-react';
 import { ContactForm } from '@/components/contacts/contact-form';
 import { ContactDetailView } from '@/components/contacts/contact-detail-view';
@@ -304,7 +305,21 @@ export default function ContactsPage() {
  onClick={() => openDetail(contact.id)}
  >
  <TableCell className="text-foreground font-medium">
+ <span className="flex items-center gap-1.5">
  {contact.name || <span className="text-muted-foreground italic">Unnamed</span>}
+ {/* Opted-out contacts are silently skipped by every
+ broadcast — surface that in the list so nobody
+ wonders why their campaign missed someone. */}
+ {contact.marketing_opt_in === false && (
+ <span
+ title="Opted out of marketing messages"
+ className="inline-flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-500"
+ >
+ <BellOff className="size-2.5" />
+ Opted out
+ </span>
+ )}
+ </span>
  </TableCell>
  <TableCell className="text-foreground font-mono text-xs">
  {contact.phone}

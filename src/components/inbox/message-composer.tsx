@@ -1,10 +1,25 @@
 "use client";
 
-import { useState, useRef, useCallback, KeyboardEvent } from "react";
+import {
+ useState,
+ useRef,
+ useCallback,
+ useEffect,
+ useMemo,
+ KeyboardEvent,
+} from "react";
 import { Send, LayoutTemplate } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { createClient } from "@/lib/supabase/client";
+import {
+ extractSlashQuery,
+ filterCannedReplies,
+ renderCannedBody,
+} from "@/lib/canned-replies/match";
+import type { CannedReply } from "@/types";
 import { ReplyQuote } from "./reply-quote";
+import { CannedReplyPicker } from "./canned-reply-picker";
 
 interface ReplyDraft {
  /** Internal UUID of the message being replied to — sent back through onSend. */
@@ -20,6 +35,12 @@ interface MessageComposerProps {
  onOpenTemplates: () => void;
  replyTo?: ReplyDraft | null;
  onClearReply?: () => void;
+ /**
+  * Values for {{key}} placeholders in canned replies — the active
+  * contact's fields. Unknown keys are left visible in the draft so a
+  * half-filled sentence can't reach the customer unnoticed.
+  */
+ cannedPlaceholders?: Record<string, string | null | undefined>;
 }
 
 export function MessageComposer({
@@ -29,10 +50,66 @@ export function MessageComposer({
  onOpenTemplates,
  replyTo,
  onClearReply,
+ cannedPlaceholders,
 }: MessageComposerProps) {
  const [text, setText] = useState("");
  const [sending, setSending] = useState(false);
  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+ // ── Canned replies ("/shortcut") ──────────────────────────────────
+ const [cannedReplies, setCannedReplies] = useState<CannedReply[]>([]);
+ const [activeIndex, setActiveIndex] = useState(0);
+ /** Set by Escape; cleared as soon as the draft changes again, so the
+  * picker stays dismissed for the current token only. */
+ const [pickerDismissed, setPickerDismissed] = useState(false);
+
+ // One fetch per mount. A desk's snippet list is small and changes
+ // rarely — refetching per keystroke would be pure waste.
+ useEffect(() => {
+ let cancelled = false;
+ (async () => {
+ const supabase = createClient();
+ const { data, error } = await supabase
+ .from("canned_replies")
+ .select("*")
+ .order("usage_count", { ascending: false });
+ if (error) {
+ console.error("Failed to load canned replies:", error.message);
+ return;
+ }
+ if (!cancelled) setCannedReplies((data ?? []) as CannedReply[]);
+ })();
+ return () => {
+ cancelled = true;
+ };
+ }, []);
+
+ const slashQuery = pickerDismissed ? null : extractSlashQuery(text);
+ const matches = useMemo(
+ () =>
+ slashQuery === null ? [] : filterCannedReplies(cannedReplies, slashQuery),
+ [slashQuery, cannedReplies],
+ );
+ const pickerOpen = slashQuery !== null;
+
+ const applyCannedReply = useCallback(
+ (reply: CannedReply) => {
+ setText(renderCannedBody(reply.body, cannedPlaceholders ?? {}));
+ setPickerDismissed(true);
+ textareaRef.current?.focus();
+
+ // Usage bump is fire-and-forget: it only affects picker ordering,
+ // and failing it must never cost the agent their draft.
+ void createClient()
+ .rpc("increment_canned_reply_usage", { reply_id: reply.id })
+ .then(({ error }: { error: { message: string } | null }) => {
+ if (error) {
+ console.error("Canned reply usage bump failed:", error.message);
+ }
+ });
+ },
+ [cannedPlaceholders],
+ );
 
  const adjustHeight = useCallback(() => {
  const el = textareaRef.current;
@@ -60,17 +137,46 @@ export function MessageComposer({
 
  const handleKeyDown = useCallback(
  (e: KeyboardEvent<HTMLTextAreaElement>) => {
+ // While the slash picker is open it owns the navigation keys —
+ // otherwise Enter would send a literal "/ref" to the customer.
+ if (pickerOpen) {
+ if (e.key === "Escape") {
+ e.preventDefault();
+ setPickerDismissed(true);
+ return;
+ }
+ if (matches.length > 0) {
+ if (e.key === "ArrowDown") {
+ e.preventDefault();
+ setActiveIndex((i) => (i + 1) % matches.length);
+ return;
+ }
+ if (e.key === "ArrowUp") {
+ e.preventDefault();
+ setActiveIndex((i) => (i - 1 + matches.length) % matches.length);
+ return;
+ }
+ if (e.key === "Enter" || e.key === "Tab") {
+ e.preventDefault();
+ applyCannedReply(matches[Math.min(activeIndex, matches.length - 1)]);
+ return;
+ }
+ }
+ }
+
  if (e.key === "Enter" && !e.shiftKey) {
  e.preventDefault();
  handleSend();
  }
  },
- [handleSend]
+ [handleSend, pickerOpen, matches, activeIndex, applyCannedReply]
  );
 
  const handleChange = useCallback(
  (e: React.ChangeEvent<HTMLTextAreaElement>) => {
  setText(e.target.value);
+ setPickerDismissed(false);
+ setActiveIndex(0);
  adjustHeight();
  },
  [adjustHeight]
@@ -78,6 +184,14 @@ export function MessageComposer({
 
  return (
  <div className="border-t border-border bg-background p-3">
+ {pickerOpen && !sessionExpired && (
+ <CannedReplyPicker
+ replies={matches}
+ activeIndex={Math.min(activeIndex, Math.max(0, matches.length - 1))}
+ onHover={setActiveIndex}
+ onSelect={applyCannedReply}
+ />
+ )}
  {replyTo && (
  <div className="mb-2">
  <ReplyQuote

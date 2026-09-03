@@ -868,3 +868,204 @@ export async function downloadMedia(
  const buffer = Buffer.from(await response.arrayBuffer())
  return { buffer, contentType }
 }
+
+// ============================================================
+// Commerce — catalog and product messages
+//
+// These reference items in a Meta Commerce Manager catalog by their
+// `retailer_id`. The catalog itself is not managed here: WhatsApp
+// renders the product card from Meta's copy, so a mismatch between our
+// mirror and theirs shows up as a card that doesn't match the price we
+// quoted — which is why products.retailer_id is the join key rather
+// than any local id.
+// ============================================================
+
+/** Meta caps a multi-product message at 30 items across 10 sections. */
+export const PRODUCT_MESSAGE_LIMITS = {
+  maxSections: 10,
+  maxProductsTotal: 30,
+  sectionTitleMaxLength: 24,
+} as const
+
+export interface ProductSection {
+  title: string
+  /** Catalog retailer ids, in display order. */
+  retailerIds: string[]
+}
+
+export interface SendCatalogMessageArgs {
+  phoneNumberId: string
+  accessToken: string
+  to: string
+  bodyText: string
+  footerText?: string
+  /**
+   * Item shown on the catalog card's thumbnail. Optional — Meta picks
+   * the catalog's cover when omitted.
+   */
+  thumbnailRetailerId?: string
+}
+
+/**
+ * Send the "view catalog" card. One tap opens the whole storefront
+ * inside WhatsApp — the lightest-weight way to answer "what do you
+ * sell?" without listing anything by hand.
+ */
+export async function sendCatalogMessage(
+  args: SendCatalogMessageArgs
+): Promise<MetaSendResult> {
+  const { phoneNumberId, accessToken, to, bodyText, footerText, thumbnailRetailerId } = args
+  validateInteractiveBody(bodyText)
+  validateInteractiveHeaderFooter(undefined, footerText)
+
+  const interactive: Record<string, unknown> = {
+    type: 'catalog_message',
+    body: { text: bodyText },
+    action: {
+      name: 'catalog_message',
+      ...(thumbnailRetailerId
+        ? { parameters: { thumbnail_product_retailer_id: thumbnailRetailerId } }
+        : {}),
+    },
+  }
+  if (footerText) interactive.footer = { text: footerText }
+
+  return postInteractive({ phoneNumberId, accessToken, to, interactive })
+}
+
+export interface SendProductMessageArgs {
+  phoneNumberId: string
+  accessToken: string
+  to: string
+  catalogId: string
+  retailerId: string
+  bodyText?: string
+  footerText?: string
+}
+
+/**
+ * Send a single product card. The customer can add it to a cart and
+ * send the cart back, which arrives as an inbound `order` message.
+ */
+export async function sendProductMessage(
+  args: SendProductMessageArgs
+): Promise<MetaSendResult> {
+  const { phoneNumberId, accessToken, to, catalogId, retailerId, bodyText, footerText } = args
+  if (!catalogId) throw new Error('Product message requires a catalogId.')
+  if (!retailerId) throw new Error('Product message requires a retailerId.')
+  if (bodyText) validateInteractiveBody(bodyText)
+  validateInteractiveHeaderFooter(undefined, footerText)
+
+  const interactive: Record<string, unknown> = {
+    type: 'product',
+    action: {
+      catalog_id: catalogId,
+      product_retailer_id: retailerId,
+    },
+  }
+  if (bodyText) interactive.body = { text: bodyText }
+  if (footerText) interactive.footer = { text: footerText }
+
+  return postInteractive({ phoneNumberId, accessToken, to, interactive })
+}
+
+export interface SendProductListArgs {
+  phoneNumberId: string
+  accessToken: string
+  to: string
+  catalogId: string
+  headerText: string
+  bodyText: string
+  footerText?: string
+  sections: ProductSection[]
+}
+
+/**
+ * Send a multi-product message — a curated subset of the catalog,
+ * grouped into sections. Validation runs before the network call so a
+ * bad selection fails where the operator can see it, not mid-chat.
+ */
+export async function sendProductList(
+  args: SendProductListArgs
+): Promise<MetaSendResult> {
+  const {
+    phoneNumberId, accessToken, to, catalogId,
+    headerText, bodyText, footerText, sections,
+  } = args
+
+  if (!catalogId) throw new Error('Product list requires a catalogId.')
+  if (!headerText) throw new Error('Product list requires a headerText.')
+  validateInteractiveBody(bodyText)
+  validateInteractiveHeaderFooter(headerText, footerText)
+
+  if (sections.length < 1 || sections.length > PRODUCT_MESSAGE_LIMITS.maxSections) {
+    throw new Error(
+      `Product list requires 1-${PRODUCT_MESSAGE_LIMITS.maxSections} sections (got ${sections.length}).`
+    )
+  }
+  const total = sections.reduce((sum, s) => sum + s.retailerIds.length, 0)
+  if (total < 1 || total > PRODUCT_MESSAGE_LIMITS.maxProductsTotal) {
+    throw new Error(
+      `Product list requires 1-${PRODUCT_MESSAGE_LIMITS.maxProductsTotal} products in total (got ${total}).`
+    )
+  }
+  for (const section of sections) {
+    if (!section.title) throw new Error('Product list section missing title.')
+    if (section.title.length > PRODUCT_MESSAGE_LIMITS.sectionTitleMaxLength) {
+      throw new Error(
+        `Product list section title "${section.title}" exceeds ${PRODUCT_MESSAGE_LIMITS.sectionTitleMaxLength} chars.`
+      )
+    }
+    if (section.retailerIds.length === 0) {
+      throw new Error(`Product list section "${section.title}" has no products.`)
+    }
+  }
+
+  const interactive: Record<string, unknown> = {
+    type: 'product_list',
+    header: { type: 'text', text: headerText },
+    body: { text: bodyText },
+    action: {
+      catalog_id: catalogId,
+      sections: sections.map((s) => ({
+        title: s.title,
+        product_items: s.retailerIds.map((id) => ({ product_retailer_id: id })),
+      })),
+    },
+  }
+  if (footerText) interactive.footer = { text: footerText }
+
+  return postInteractive({ phoneNumberId, accessToken, to, interactive })
+}
+
+/**
+ * Shared POST for every interactive variant above. The three product
+ * senders differ only in their `interactive` payload, so the transport,
+ * error handling and result shape live in one place.
+ */
+async function postInteractive(args: {
+  phoneNumberId: string
+  accessToken: string
+  to: string
+  interactive: Record<string, unknown>
+}): Promise<MetaSendResult> {
+  const response = await fetch(`${META_API_BASE}/${args.phoneNumberId}/messages`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${args.accessToken}`,
+    },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: args.to,
+      type: 'interactive',
+      interactive: args.interactive,
+    }),
+  })
+  if (!response.ok) {
+    await throwMetaError(response, `Meta API error: ${response.status}`)
+  }
+  const data = await response.json()
+  return { messageId: data.messages[0].id }
+}

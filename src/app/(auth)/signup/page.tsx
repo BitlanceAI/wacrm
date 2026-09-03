@@ -15,12 +15,13 @@ import {
  CardHeader,
  CardTitle,
 } from "@/components/ui/card";
-import { MessageSquare, CheckCircle } from "lucide-react";
+import { MessageSquare, CheckCircle, Eye, EyeOff } from "lucide-react";
 
 export default function SignupPage() {
  const [fullName, setFullName] = useState("");
  const [email, setEmail] = useState("");
  const [password, setPassword] = useState("");
+ const [showPassword, setShowPassword] = useState(false);
  const [confirmPassword, setConfirmPassword] = useState("");
  const [error, setError] = useState<string | null>(null);
  const [loading, setLoading] = useState(false);
@@ -149,15 +150,26 @@ export default function SignupPage() {
  <Label htmlFor="password" className="text-foreground">
  Password
  </Label>
+ <div className="relative">
  <Input
  id="password"
- type="password"
+ type={showPassword ? "text" : "password"}
  placeholder="At least 6 characters"
  value={password}
  onChange={(e) => setPassword(e.target.value)}
  required
- className="border-border bg-accent text-foreground placeholder:text-muted-foreground focus-visible:border-primary focus-visible:ring-primary/20"
+ className="border-border bg-accent pr-10 text-foreground placeholder:text-muted-foreground focus-visible:border-primary focus-visible:ring-primary/20"
  />
+ <button
+ type="button"
+ onClick={() => setShowPassword((s) => !s)}
+ aria-label={showPassword ? "Hide password" : "Show password"}
+ className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+ tabIndex={-1}
+ >
+ {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+ </button>
+ </div>
  </div>
 
  <div className="flex flex-col gap-2">
@@ -166,7 +178,7 @@ export default function SignupPage() {
  </Label>
  <Input
  id="confirmPassword"
- type="password"
+ type={showPassword ? "text" : "password"}
  placeholder="Repeat your password"
  value={confirmPassword}
  onChange={(e) => setConfirmPassword(e.target.value)}

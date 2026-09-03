@@ -7,6 +7,7 @@ import {
  isRecipientNotAllowedError,
 } from '@/lib/whatsapp/phone-utils'
 import { supabaseAdmin } from './admin-client'
+import { botOutboundPatch } from '@/lib/conversations/response-metrics'
 
 // ------------------------------------------------------------
 // Automation-side Meta sender.
@@ -161,6 +162,9 @@ async function sendViaMeta(input: SendInput): Promise<{ whatsapp_message_id: str
  input.kind === 'template' ? `[template:${input.templateName}]` : input.text,
  last_message_at: new Date().toISOString(),
  updated_at: new Date().toISOString(),
+ // Automated reply: clears the wait clock, never counts as the
+ // human first response. See lib/conversations/response-metrics.ts.
+ ...botOutboundPatch(),
  })
  .eq('id', input.conversationId)
 

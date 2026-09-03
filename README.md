@@ -86,6 +86,24 @@ Key pages:
 - **Data** — Supabase (Postgres + Auth + Storage + RLS).
 - **WhatsApp** — Meta Cloud API (official WhatsApp Business API).
 
+## Scheduled jobs
+
+Four endpoints do time-based work and must be hit on a schedule (Vercel
+Cron, GitHub Actions, or any external pinger). All four authenticate
+with the same `AUTOMATION_CRON_SECRET`, sent as an `x-cron-secret`
+header, and each lives on its own URL so one failing doesn't stop the
+others.
+
+| Endpoint | What it does | Suggested interval |
+| --- | --- | --- |
+| `GET /api/automations/cron` | Fires time-based automation triggers | 5 min |
+| `GET /api/flows/cron` | Times out abandoned flow runs | 5 min |
+| `GET /api/appointments/cron` | Sends due appointment reminders | 5 min |
+| `GET /api/billing/cron` | Marks invoices overdue, sends payment reminders, rolls subscriptions forward | daily |
+
+Without the appointment and billing sweeps, reminders are scheduled but
+never sent — the rows simply sit in `pending`.
+
 ## Contributing
 
 This is a template, not a collaborative product — the expected flow is

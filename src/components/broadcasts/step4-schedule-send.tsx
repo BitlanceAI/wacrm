@@ -68,8 +68,14 @@ export function Step4ScheduleSend({
 
                     const uniqueIds = new Set((contactTags ?? []).map((ct) => ct.contact_id));
                     setEstimatedReach(uniqueIds.size);
-                } else if (audience.type === 'csv' && audience.csvContacts) {
-                    setEstimatedReach(audience.csvContacts.length);
+                } else if (
+                    (audience.type === 'csv' || audience.type === 'manual') &&
+                    audience.csvContacts
+                ) {
+                    // Dedupe by phone — pasted/uploaded lists can repeat rows.
+                    setEstimatedReach(
+                        new Set(audience.csvContacts.map((c) => c.phone)).size
+                    );
                 } else {
                     setEstimatedReach(0);
                 }
@@ -88,7 +94,9 @@ export function Step4ScheduleSend({
                 ? `Tags (${audience.tagIds?.length ?? 0} selected)`
                 : audience.type === 'csv'
                     ? 'CSV Upload'
-                    : 'Custom';
+                    : audience.type === 'manual'
+                        ? 'Entered Numbers'
+                        : 'Custom';
 
     return (
         <div className="space-y-6">

@@ -141,6 +141,10 @@ export function ImportModal({ open, onOpenChange, onImported }: ImportModalProps
                     name: row.name || null,
                     email: row.email || null,
                     company: row.company || null,
+                    // Lead-source attribution (migration 014). Imported
+                    // rows are never ad-sourced, so stamp them here
+                    // rather than letting them fall back to 'manual'.
+                    source: 'import' as const,
                 }));
 
                 const { data, error } = await supabase

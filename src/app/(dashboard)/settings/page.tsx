@@ -2,18 +2,24 @@
 
 import { useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Settings, Tag, User } from 'lucide-react';
+import { Settings, Tag, User, Zap, Headphones, IndianRupee } from 'lucide-react';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { WhatsAppConfig } from '@/components/settings/whatsapp-config';
 import { TagManager } from '@/components/settings/tag-manager';
 import { ProfileForm } from '@/components/settings/profile-form';
 import { PasswordForm } from '@/components/settings/password-form';
 import { SessionsCard } from '@/components/settings/sessions-card';
+import { CannedReplyManager } from '@/components/settings/canned-reply-manager';
+import { SupportDeskPanel } from '@/components/settings/support-desk-panel';
+import { BillingPanel } from '@/components/settings/billing-panel';
 
 const TAB_VALUES = [
  'profile',
  'whatsapp',
  'tags',
+ 'quick-replies',
+ 'support',
+ 'billing',
 ] as const;
 type TabValue = (typeof TAB_VALUES)[number];
 
@@ -49,8 +55,8 @@ export default function SettingsPage() {
  <div>
  <h1 className="text-2xl font-bold text-foreground">Settings</h1>
  <p className="text-sm text-muted-foreground mt-1">
- Manage your profile, WhatsApp® integration, and tags. Message
- templates now live in the sidebar under Templates.
+ Manage your profile, WhatsApp® integration, tags, and inbox quick
+ replies. Message templates now live in the sidebar under Templates.
  </p>
  </div>
 
@@ -77,6 +83,27 @@ export default function SettingsPage() {
  <Tag className="size-4" />
  Tags
  </TabsTrigger>
+ <TabsTrigger
+ value="quick-replies"
+ className="data-active:bg-accent data-active:text-primary text-muted-foreground"
+ >
+ <Zap className="size-4" />
+ Quick Replies
+ </TabsTrigger>
+ <TabsTrigger
+ value="support"
+ className="data-active:bg-accent data-active:text-primary text-muted-foreground"
+ >
+ <Headphones className="size-4" />
+ Support Desk
+ </TabsTrigger>
+ <TabsTrigger
+ value="billing"
+ className="data-active:bg-accent data-active:text-primary text-muted-foreground"
+ >
+ <IndianRupee className="size-4" />
+ Billing
+ </TabsTrigger>
  </TabsList>
 
  <TabsContent value="profile" className="space-y-6">
@@ -91,6 +118,18 @@ export default function SettingsPage() {
 
  <TabsContent value="tags">
  <TagManager />
+ </TabsContent>
+
+ <TabsContent value="quick-replies">
+ <CannedReplyManager />
+ </TabsContent>
+
+ <TabsContent value="support">
+ <SupportDeskPanel />
+ </TabsContent>
+
+ <TabsContent value="billing">
+ <BillingPanel />
  </TabsContent>
  </Tabs>
  </div>

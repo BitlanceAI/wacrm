@@ -13,6 +13,7 @@ import {
  isRecipientNotAllowedError,
 } from '@/lib/whatsapp/phone-utils'
 import { supabaseAdmin } from './admin-client'
+import { botOutboundPatch } from '@/lib/conversations/response-metrics'
 
 // ------------------------------------------------------------
 // Flows-side Meta sender (interactive variants).
@@ -34,6 +35,13 @@ interface SendTextEngineArgs {
  conversationId: string
  contactId: string
  text: string
+ /**
+  * Leave `awaiting_reply_since` running. Used by the out-of-hours away
+  * auto-reply: telling a customer we're closed is not answering them,
+  * and clearing the wait clock would hide the thread from the
+  * "waiting on us" queue until someone happened to open it.
+  */
+ preserveWaitClock?: boolean
 }
 
 /**
@@ -129,6 +137,10 @@ export async function engineSendText(
  last_message_text: args.text,
  last_message_at: new Date().toISOString(),
  updated_at: new Date().toISOString(),
+ // A flow reply answers the customer, so the thread stops
+ // counting as waiting on us — but it is not a human first
+ // response. See lib/conversations/response-metrics.ts.
+ ...(args.preserveWaitClock ? {} : botOutboundPatch()),
  })
  .eq('id', args.conversationId)
 
@@ -301,6 +313,7 @@ async function sendInteractiveViaMeta(
  last_message_text: input.bodyText,
  last_message_at: new Date().toISOString(),
  updated_at: new Date().toISOString(),
+ ...botOutboundPatch(),
  })
  .eq('id', input.conversationId)
 

@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { cn } from "@/lib/utils";
 import type { Conversation, ConversationStatus } from "@/types";
-import { Search, ChevronDown } from "lucide-react";
+import { Search, ChevronDown, Clock } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { Input } from "@/components/ui/input";
 import {
@@ -15,6 +15,11 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+ elapsedSeconds,
+ formatDuration,
+ waitSeverity,
+} from "@/lib/conversations/response-metrics";
 
 interface ConversationListProps {
  activeConversationId: string | null;
@@ -42,6 +47,16 @@ const FILTER_OPTIONS: { label: string; value: ConversationStatus | "all" }[] = [
  { label: "Pending", value: "pending" },
  { label: "Closed", value: "closed" },
 ];
+
+/**
+ * Wait-badge colours. Under an hour reads as normal traffic; the amber
+ * and red bands are the ones meant to pull the eye.
+ */
+const WAIT_COLORS: Record<string, string> = {
+ normal: "bg-muted text-muted-foreground",
+ warning: "bg-amber-500/15 text-amber-500",
+ critical: "bg-red-500/15 text-red-500",
+};
 
 export function ConversationList({
  activeConversationId,
@@ -239,6 +254,15 @@ function ConversationItem({
  })
  : "";
 
+ // How long this customer has been waiting on a reply. Closed threads
+ // never show it — a resolved conversation isn't a queue item, even if
+ // the customer's last message was the final one.
+ const waitingSeconds =
+ conversation.status === "closed"
+ ? 0
+ : elapsedSeconds(conversation.awaiting_reply_since, new Date().toISOString());
+ const severity = waitSeverity(waitingSeconds);
+
  return (
  <button
  onClick={handleClick}
@@ -273,6 +297,18 @@ function ConversationItem({
  {conversation.last_message_text || "No messages yet"}
  </p>
  <div className="flex shrink-0 items-center gap-1.5">
+ {severity !== "none" && (
+ <span
+ className={cn(
+ "flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] font-medium",
+ WAIT_COLORS[severity]
+ )}
+ title={`Waiting ${formatDuration(waitingSeconds)} for a reply`}
+ >
+ <Clock className="size-2.5" />
+ {formatDuration(waitingSeconds)}
+ </span>
+ )}
  {conversation.unread_count > 0 && (
  <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold text-primary-foreground">
  {conversation.unread_count}

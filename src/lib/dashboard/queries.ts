@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { averageScore, satisfactionRate } from '@/lib/support/csat'
 import {
  daysAgoStart,
  DOW_SHORT_MON_FIRST,
@@ -15,6 +16,7 @@ import type {
  PipelineStageSlice,
  ResponseTimeBucket,
  ResponseTimeSummary,
+ SupportHealth,
 } from './types'
 
 // ------------------------------------------------------------
@@ -260,6 +262,70 @@ export async function loadResponseTime(db: DB): Promise<ResponseTimeSummary> {
  buckets,
  thisWeekAvg: avg(thisWeekMins),
  lastWeekAvg: avg(lastWeekMins),
+ }
+}
+
+// --- 4b. Support health -------------------------------------------------
+
+/** A wait longer than this counts as a breach; matches waitSeverity(). */
+const BREACH_SECONDS = 4 * 3600
+
+/**
+ * Current queue pressure + trailing resolution speed, read straight off
+ * the conversation clocks (migration 015) rather than re-derived from
+ * messages. Two small queries: one for what's waiting now, one for what
+ * was resolved in the window.
+ */
+export async function loadSupportHealth(
+ db: DB,
+ windowDays = 30,
+): Promise<SupportHealth> {
+ const since = daysAgoStart(windowDays - 1).toISOString()
+
+ const [waitingRes, resolvedRes, csatRes] = await Promise.all([
+ db
+ .from('conversations')
+ .select('awaiting_reply_since')
+ .not('awaiting_reply_since', 'is', null)
+ .neq('status', 'closed'),
+ db
+ .from('conversations')
+ .select('resolution_seconds')
+ .gte('resolved_at', since)
+ .not('resolution_seconds', 'is', null),
+ db
+ .from('csat_responses')
+ .select('score')
+ .gte('responded_at', since)
+ .not('score', 'is', null),
+ ])
+
+ if (waitingRes.error) throw waitingRes.error
+ if (resolvedRes.error) throw resolvedRes.error
+ if (csatRes.error) throw csatRes.error
+
+ const now = Date.now()
+ const waits = ((waitingRes.data ?? []) as { awaiting_reply_since: string }[])
+ .map((r) => Math.max(0, (now - new Date(r.awaiting_reply_since).getTime()) / 1000))
+
+ const scores = ((csatRes.data ?? []) as { score: number }[]).map((r) => r.score)
+
+ const resolutions = (
+ (resolvedRes.data ?? []) as { resolution_seconds: number }[]
+ ).map((r) => r.resolution_seconds)
+
+ return {
+ waitingCount: waits.length,
+ oldestWaitSeconds: waits.length ? Math.round(Math.max(...waits)) : null,
+ breachedCount: waits.filter((w) => w >= BREACH_SECONDS).length,
+ avgResolutionSeconds: resolutions.length
+ ? Math.round(resolutions.reduce((a, b) => a + b, 0) / resolutions.length)
+ : null,
+ resolvedCount: resolutions.length,
+ windowDays,
+ csatAverage: averageScore(scores),
+ csatSatisfaction: satisfactionRate(scores),
+ csatResponses: scores.length,
  }
 }
 

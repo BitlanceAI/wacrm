@@ -13,8 +13,17 @@ export interface CustomFieldFilter {
 }
 
 export interface AudienceConfig {
- type: 'all' | 'tags' | 'custom_field' | 'csv';
+ /** 'manual' = phone numbers typed into the wizard; it shares the
+  * csvContacts shape and the CSV upsert pipeline. */
+ type: 'all' | 'tags' | 'custom_field' | 'csv' | 'manual' | 'inactive';
  tagIds?: string[];
+ /**
+  * For type 'inactive' (win-back): contacts whose last INBOUND message
+  * is older than this many days, plus contacts who have never written
+  * at all. Measured on inbound only — our own broadcasts landing in
+  * their thread say nothing about whether they are still engaged.
+  */
+ inactiveDays?: number;
  customField?: CustomFieldFilter;
  csvContacts?: { phone: string; name?: string; vars?: Record<string, string> }[];
  /** Contacts carrying any of these tags are subtracted from the result. */
@@ -73,6 +82,8 @@ interface BroadcastApiResult {
  status: 'sent' | 'failed';
  whatsapp_message_id?: string;
  error?: string;
+ /** Server-side opt-out backstop fired; nothing was sent to Meta. */
+ opted_out?: boolean;
 }
 
 /** contactId → (customFieldId → value). */
@@ -272,9 +283,17 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
  if (taggedIds.size > 0) {
  contacts = await fetchContactsByIds(supabase, [...taggedIds]);
  }
+ } else if (audience.type === 'inactive') {
+ contacts = await resolveInactiveAudience(
+ supabase,
+ audience.inactiveDays ?? 30,
+ );
  } else if (audience.type === 'custom_field' && audience.customField) {
  contacts = await resolveCustomFieldAudience(supabase, audience.customField);
- } else if (audience.type === 'csv' && audience.csvContacts) {
+ } else if (
+ (audience.type === 'csv' || audience.type === 'manual') &&
+ audience.csvContacts
+ ) {
  contacts = await upsertCsvContacts(supabase, audience.csvContacts);
  }
 
@@ -288,7 +307,11 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
  contacts = contacts.filter((c) => !excludedIds.has(c.id));
  }
 
- return contacts;
+ // Marketing opt-out is absolute and applies to every audience type,
+ // CSV re-uploads included: re-importing a number does not undo the
+ // contact's request to stop. `undefined` means the column predates
+ // migration 014 on this row — treat as opted in.
+ return contacts.filter((c) => c.marketing_opt_in !== false);
  }
 
  /**
@@ -346,6 +369,7 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
  user_id: user.id,
  phone,
  name: uniqueByPhone.get(phone)?.name ?? null,
+ source: 'import' as const,
  }));
 
  const INSERT_CHUNK = 200;
@@ -367,6 +391,57 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
  return phones
  .map((p) => byPhone.get(p))
  .filter((c): c is Contact => Boolean(c));
+ }
+
+ /**
+ * Win-back segment: everyone who hasn't written in `days`.
+ *
+ * Built from the message log rather than conversations.last_message_at,
+ * which is bumped by our OWN outbound messages — using it would mean a
+ * broadcast re-engages nobody, because sending it makes every recipient
+ * look active again.
+ *
+ * Contacts who have never sent an inbound message count as inactive:
+ * an imported list that has never replied is exactly who a win-back
+ * campaign is for.
+ */
+ async function resolveInactiveAudience(
+ supabase: ReturnType<typeof createClient>,
+ days: number,
+ ): Promise<Contact[]> {
+ const cutoff = new Date(Date.now() - days * 86_400_000).toISOString();
+
+ // Everyone who HAS written recently — the set to subtract.
+ const recentRows = await fetchAllPages<{
+ conversation_id: string;
+ conversations: { contact_id: string } | { contact_id: string }[] | null;
+ }>(
+ (from, to) =>
+ supabase
+ .from('messages')
+ .select('conversation_id, conversations(contact_id)')
+ .eq('sender_type', 'customer')
+ .gte('created_at', cutoff)
+ .order('conversation_id')
+ .range(from, to),
+ 'Failed to fetch recent inbound messages',
+ );
+
+ const activeContactIds = new Set<string>();
+ for (const row of recentRows) {
+ const conv = Array.isArray(row.conversations)
+ ? row.conversations[0]
+ : row.conversations;
+ if (conv?.contact_id) activeContactIds.add(conv.contact_id);
+ }
+
+ const all = await fetchAllPages<Contact>(
+ (from, to) =>
+ supabase.from('contacts').select('*').order('id').range(from, to),
+ 'Failed to fetch contacts',
+ );
+
+ return all.filter((c) => !activeContactIds.has(c.id));
  }
 
  async function resolveCustomFieldAudience(
@@ -443,6 +518,7 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
  audience_filter: {
  type: payload.audience.type,
  tagIds: payload.audience.tagIds,
+ inactiveDays: payload.audience.inactiveDays,
  customField: payload.audience.customField,
  excludeTagIds: payload.audience.excludeTagIds,
  },
@@ -530,7 +606,10 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
   // Build a phone → vars map for CSV broadcasts so each contact's
   // uploaded variable values override the generic field mappings.
   const csvVarsIndex = new Map<string, Record<string, string>>();
-  if (payload.audience.type === 'csv' && payload.audience.csvContacts) {
+  if (
+    (payload.audience.type === 'csv' || payload.audience.type === 'manual') &&
+    payload.audience.csvContacts
+  ) {
     for (const csvRow of payload.audience.csvContacts) {
       if (csvRow.phone && csvRow.vars) {
         csvVarsIndex.set(csvRow.phone, csvRow.vars);

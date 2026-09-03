@@ -15,6 +15,7 @@ import {
  loadMetrics,
  loadPipelineDonut,
  loadResponseTime,
+ loadSupportHealth,
 } from '@/lib/dashboard/queries'
 import type {
  ActivityItem,
@@ -22,6 +23,7 @@ import type {
  MetricsBundle,
  PipelineDonutData,
  ResponseTimeSummary,
+ SupportHealth,
 } from '@/lib/dashboard/types'
 import { formatCurrency } from '@/lib/utils'
 
@@ -32,6 +34,7 @@ import { ConversationsChart } from '@/components/dashboard/conversations-chart'
 import { PipelineDonut } from '@/components/dashboard/pipeline-donut'
 import { ResponseTimeChart } from '@/components/dashboard/response-time-chart'
 import { ActivityFeed } from '@/components/dashboard/activity-feed'
+import { SupportHealthCards } from '@/components/dashboard/support-health-cards'
 
 type RangeDays = 7 | 30 | 90
 
@@ -55,6 +58,9 @@ export default function DashboardPage() {
 
  const [responseTime, setResponseTime] = useState<ResponseTimeSummary | null>(null)
  const [responseTimeLoading, setResponseTimeLoading] = useState(true)
+
+ const [supportHealth, setSupportHealth] = useState<SupportHealth | null>(null)
+ const [supportHealthLoading, setSupportHealthLoading] = useState(true)
 
  const [activity, setActivity] = useState<ActivityItem[] | null>(null)
  const [activityLoading, setActivityLoading] = useState(true)
@@ -88,6 +94,11 @@ export default function DashboardPage() {
  // Fetch up to 50 so the biggest page-size option in the feed
  // (50 rows) is already in memory — switching sizes then becomes
  // a pure client-side slice with no extra round trip.
+ void loadSupportHealth(db)
+ .then((h) => setSupportHealth(h))
+ .catch((err) => console.error('[dashboard] support health failed:', err))
+ .finally(() => setSupportHealthLoading(false))
+
  void loadActivity(db, 50)
  .then((a) => setActivity(a))
  .catch((err) => console.error('[dashboard] activity failed:', err))
@@ -176,6 +187,9 @@ export default function DashboardPage() {
  </>
  )}
  </div>
+
+ {/* Support health — queue pressure + resolution speed */}
+ <SupportHealthCards data={supportHealth} loading={supportHealthLoading} />
 
  {/* Quick actions */}
  <QuickActions />

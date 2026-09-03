@@ -6,6 +6,18 @@ import { normalizePhone, phonesMatch } from '@/lib/whatsapp/phone-utils'
 import { verifyMetaWebhookSignature } from '@/lib/whatsapp/webhook-signature'
 import { runAutomationsForTrigger } from '@/lib/automations/engine'
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
+import { detectOptKeyword } from '@/lib/whatsapp/opt-out'
+import { inboundPatch } from '@/lib/conversations/response-metrics'
+import { shouldSendAwayReply } from '@/lib/support/business-hours'
+import { parseCsatReply } from '@/lib/support/csat'
+import { engineSendText } from '@/lib/flows/meta-send'
+import { parseOrder, describeOrder, type RawOrder } from '@/lib/commerce/order'
+import {
+ parseReferral,
+ sourceForReferral,
+ type RawReferral,
+ type ReferralAttribution,
+} from '@/lib/whatsapp/referral'
 
 // after()-scheduled webhook processing (media downloads, automation
 // chains) runs within the route's max duration — the platform default
@@ -51,6 +63,17 @@ interface WhatsAppMessage {
  }
  /** Present when the customer swipe-replies to one of our messages. */
  context?: { id: string }
+ /**
+  * Present ONLY on the first message after the customer taps a
+  * Click-to-WhatsApp ad or a Facebook/Instagram post CTA. Meta never
+  * resends it, so a lead's origin is captured here or lost forever.
+  */
+ referral?: RawReferral
+ /**
+  * A cart the customer sent from the catalog. Arrives once, on a
+  * message of type `order`; the line items are only in here.
+  */
+ order?: RawOrder
 }
 
 interface WhatsAppWebhookEntry {
@@ -501,6 +524,226 @@ async function handleReaction(
  }
 }
 
+/**
+ * Persist an inbound cart as an order plus its line items.
+ *
+ * Idempotent on `wa_message_id` (unique in migration 020), so a webhook
+ * replay — which Meta does on any non-200 — updates nothing rather than
+ * creating a second order for the same cart.
+ *
+ * Prices come from Meta's payload, not from our `products` mirror: the
+ * customer agreed to the price the catalog showed them, and if the two
+ * disagree the customer's number is the one that counts.
+ */
+async function persistOrder(args: {
+ message: WhatsAppMessage
+ userId: string
+ contactId: string
+ conversationId: string
+}): Promise<void> {
+ const parsed = parseOrder(args.message.order)
+ if (!parsed) return
+
+ const db = supabaseAdmin()
+
+ const { data: existing } = await db
+ .from('orders')
+ .select('id')
+ .eq('wa_message_id', args.message.id)
+ .maybeSingle()
+ if (existing) {
+ console.log(`[webhook] order replay ignored wamid=${args.message.id}`)
+ return
+ }
+
+ const { data: order, error: orderError } = await db
+ .from('orders')
+ .insert({
+ user_id: args.userId,
+ contact_id: args.contactId,
+ conversation_id: args.conversationId,
+ wa_message_id: args.message.id,
+ catalog_id: parsed.catalog_id,
+ total_minor: parsed.total_minor,
+ currency: parsed.currency,
+ customer_note: parsed.customer_note,
+ })
+ .select('id')
+ .single()
+
+ if (orderError || !order) {
+ console.error('[webhook] order insert failed:', orderError?.message)
+ return
+ }
+
+ // Match each line to the local mirror where we have it, so the order
+ // view can show a product name. A line with no local product is kept
+ // regardless — it is still something the customer wants to buy.
+ const retailerIds = parsed.items.map((i) => i.retailer_id)
+ const { data: products } = await db
+ .from('products')
+ .select('id, retailer_id, name')
+ .eq('user_id', args.userId)
+ .in('retailer_id', retailerIds)
+
+ type ProductRow = { id: string; retailer_id: string; name: string }
+ const byRetailerId = new Map<string, ProductRow>(
+ ((products ?? []) as ProductRow[]).map((p) => [p.retailer_id, p])
+ )
+
+ const { error: itemsError } = await db.from('order_items').insert(
+ parsed.items.map((item) => {
+ const product = byRetailerId.get(item.retailer_id)
+ return {
+ order_id: order.id,
+ retailer_id: item.retailer_id,
+ product_id: product?.id ?? null,
+ name: product?.name ?? null,
+ quantity: item.quantity,
+ unit_price_minor: item.unit_price_minor,
+ currency: item.currency,
+ }
+ })
+ )
+ if (itemsError) {
+ console.error('[webhook] order items insert failed:', itemsError.message)
+ }
+
+ console.log(
+ `[webhook] order captured id=${order.id} items=${parsed.items.length} total=${parsed.total_minor} ${parsed.currency}`
+ )
+}
+
+/**
+ * Record a CSAT score when the customer taps a rating row on the
+ * post-resolution survey.
+ *
+ * Matches the one pending (unanswered) survey for this conversation —
+ * the partial unique index in migration 017 guarantees there is at
+ * most one. A tap on an old, already-answered survey therefore updates
+ * nothing rather than overwriting a score the customer gave weeks ago.
+ *
+ * Best-effort: the message itself is stored either way, so a failure
+ * here loses a data point, not the customer's words.
+ */
+async function recordCsatIfAny(
+ interactiveReplyId: string | null,
+ conversationId: string
+): Promise<void> {
+ const score = parseCsatReply(interactiveReplyId)
+ if (score === null) return
+
+ const { error } = await supabaseAdmin()
+ .from('csat_responses')
+ .update({ score, responded_at: new Date().toISOString() })
+ .eq('conversation_id', conversationId)
+ .is('responded_at', null)
+
+ if (error) {
+ console.error('[webhook] CSAT score write failed:', error.message)
+ return
+ }
+ console.log(`[webhook] CSAT score=${score} conversation=${conversationId}`)
+}
+
+/**
+ * Send the out-of-hours auto-reply when the desk is closed.
+ *
+ * Deliberately does NOT clear the wait clock (preserveWaitClock): the
+ * customer still needs a human, and hiding the thread from the
+ * "waiting on us" queue because a robot apologised would defeat the
+ * point of tracking response time at all.
+ *
+ * Entirely best-effort — an account with no inbox_settings row simply
+ * has the feature off.
+ */
+async function maybeSendAwayReply(args: {
+ userId: string
+ conversationId: string
+ contactId: string
+ lastAwaySentAt: string | null
+}): Promise<void> {
+ try {
+ const { data: settings, error } = await supabaseAdmin()
+ .from('inbox_settings')
+ .select('*')
+ .eq('user_id', args.userId)
+ .maybeSingle()
+ if (error || !settings) return
+
+ const due = shouldSendAwayReply({
+ awayEnabled: settings.away_enabled,
+ schedule: settings.business_hours,
+ timeZone: settings.timezone,
+ cooldownMinutes: settings.away_cooldown_minutes,
+ lastAwaySentAt: args.lastAwaySentAt,
+ })
+ if (!due) return
+
+ await engineSendText({
+ userId: args.userId,
+ conversationId: args.conversationId,
+ contactId: args.contactId,
+ text: settings.away_message,
+ preserveWaitClock: true,
+ })
+
+ await supabaseAdmin()
+ .from('conversations')
+ .update({ last_away_sent_at: new Date().toISOString() })
+ .eq('id', args.conversationId)
+
+ console.log(`[webhook] away auto-reply sent conversation=${args.conversationId}`)
+ } catch (err) {
+ console.error(
+ '[webhook] away auto-reply failed:',
+ err instanceof Error ? err.message : err
+ )
+ }
+}
+
+/**
+ * Flip `contacts.marketing_opt_in` when an inbound message is a bare
+ * opt-out / opt-in keyword. Best-effort: a failure here must not stop
+ * the message from being stored, but it IS logged loudly — a silently
+ * dropped STOP is a policy violation, not a cosmetic bug.
+ */
+async function applyOptKeyword(
+ message: WhatsAppMessage,
+ contactRecord: ContactRow
+): Promise<void> {
+ if (message.type !== 'text') return
+ const keyword = detectOptKeyword(message.text?.body)
+ if (!keyword) return
+
+ const optIn = keyword === 'opt_in'
+ // Already in the requested state — nothing to write.
+ if ((contactRecord.marketing_opt_in ?? true) === optIn) return
+
+ const { error } = await supabaseAdmin()
+ .from('contacts')
+ .update({
+ marketing_opt_in: optIn,
+ opted_out_at: optIn ? null : new Date().toISOString(),
+ opt_out_reason: optIn ? null : 'keyword',
+ updated_at: new Date().toISOString(),
+ })
+ .eq('id', contactRecord.id)
+
+ if (error) {
+ console.error(
+ `[webhook] ✗ FAILED to apply "${keyword}" for contact=${contactRecord.id}: ${error.message}`
+ )
+ return
+ }
+
+ // Keep the in-memory copy honest for the rest of this invocation.
+ contactRecord.marketing_opt_in = optIn
+ console.log(
+ `[webhook] ${optIn ? 'OPT-IN' : 'OPT-OUT'} applied contact=${contactRecord.id} phone="${message.from}"`
+ )
+}
+
 async function processMessage(
  message: WhatsAppMessage,
  contact: { profile: { name: string }; wa_id: string },
@@ -510,14 +753,32 @@ async function processMessage(
  const senderPhone = normalizePhone(message.from)
  const contactName = contact.profile.name
 
+ // Click-to-WhatsApp attribution rides on this one message only.
+ const referral = parseReferral(
+ message.referral,
+ new Date(Number(message.timestamp) * 1000 || Date.now()).toISOString()
+ )
+ if (referral) {
+ console.log(
+ `[webhook] CTWA referral phone="${senderPhone}" sourceId="${referral.source_id}" type="${referral.source_type}" headline="${referral.headline}"`
+ )
+ }
+
  // Find or create contact
  const contactOutcome = await findOrCreateContact(
  userId,
  senderPhone,
- contactName
+ contactName,
+ referral
  )
  if (!contactOutcome) return
  const contactRecord = contactOutcome.contact
+
+ // Marketing opt-out / opt-in. Runs before anything else consumes the
+ // message so a "STOP" takes effect even if a later step throws. The
+ // message itself is still stored and still reaches automations — the
+ // customer must see their request acknowledged in the thread.
+ await applyOptKeyword(message, contactRecord)
 
  // Find or create conversation
  const conversation = await findOrCreateConversation(
@@ -610,14 +871,19 @@ async function processMessage(
  return
  }
 
- // Update conversation
+ // Update conversation. inboundPatch starts the first-response clock
+ // on the first customer message ever, and the per-cycle wait clock
+ // whenever we don't already owe this contact a reply — see
+ // lib/conversations/response-metrics.ts.
+ const nowIso = new Date().toISOString()
  const { error: convError } = await supabaseAdmin()
  .from('conversations')
  .update({
  last_message_text: contentText || `[${message.type}]`,
- last_message_at: new Date().toISOString(),
+ last_message_at: nowIso,
  unread_count: (conversation.unread_count || 0) + 1,
- updated_at: new Date().toISOString(),
+ updated_at: nowIso,
+ ...inboundPatch(conversation, nowIso),
  })
  .eq('id', conversation.id)
 
@@ -629,6 +895,31 @@ async function processMessage(
  // so the broadcast's `replied_count` advances (via the aggregate
  // trigger installed in migration 003).
  await flagBroadcastReplyIfAny(userId, contactRecord.id)
+
+ // Survey scores arrive as interactive taps, so this has to run before
+ // the flow runner gets a chance to treat the tap as menu navigation.
+ await recordCsatIfAny(interactiveReplyId, conversation.id)
+
+ // Carts become orders. Runs after the message row exists so the
+ // inbox bubble and the order reference the same event.
+ if (message.type === 'order') {
+ await persistOrder({
+ message,
+ userId,
+ contactId: contactRecord.id,
+ conversationId: conversation.id,
+ })
+ }
+
+ // Out-of-hours acknowledgement. Awaited inside after(), like the
+ // automation dispatch below — a dangling promise would be killed
+ // when the serverless instance freezes.
+ await maybeSendAwayReply({
+ userId,
+ conversationId: conversation.id,
+ contactId: contactRecord.id,
+ lastAwaySentAt: conversation.last_away_sent_at ?? null,
+ })
 
  // ============================================================
  // Flow runner dispatch.
@@ -835,6 +1126,17 @@ async function parseMessageContent(
  case 'reaction':
  return { ...empty, contentText: message.reaction?.emoji || null }
 
+ case 'order': {
+ // Stored as content_type 'text' (the CHECK constraint has no
+ // 'order' value), so the summary IS the bubble the agent reads.
+ // The line items live on the `orders` table — see persistOrder.
+ const parsed = parseOrder(message.order)
+ return {
+ ...empty,
+ contentText: parsed ? describeOrder(parsed) : '[order] empty cart',
+ }
+ }
+
  case 'interactive': {
  // The customer tapped a reply button or a list row on a message
  // we previously sent. Meta delivers `interactive.button_reply` for
@@ -875,7 +1177,15 @@ interface ContactOutcome {
 async function findOrCreateContact(
  userId: string,
  phone: string,
- name: string
+ name: string,
+ /**
+  * Ad/post attribution from this inbound message, if any. Used as
+  * first-touch: a brand-new contact is stamped with it, and an
+  * existing contact that has no attribution yet is backfilled (the
+  * webhook may well be the first time we ever saw a referral for a
+  * contact that arrived by CSV import).
+  */
+ referral: ReferralAttribution | null = null
 ): Promise<ContactOutcome | null> {
  // Look up existing contacts for this user
  const { data: contacts, error: contactsError } = await supabaseAdmin()
@@ -892,12 +1202,31 @@ async function findOrCreateContact(
  const existingContact = contacts?.find((c: ContactRow) => phonesMatch(c.phone, phone))
 
  if (existingContact) {
+ // eslint-disable-next-line @typescript-eslint/no-explicit-any
+ const patch: Record<string, any> = {}
  // Update name if it changed
- if (name && name !== existingContact.name) {
- await supabaseAdmin()
+ if (name && name !== existingContact.name) patch.name = name
+ // First-touch only: never overwrite an attribution we already hold,
+ // otherwise a repeat ad click rewrites the campaign that originally
+ // won the lead.
+ if (referral && !existingContact.source_details) {
+ patch.source_details = referral
+ patch.source = sourceForReferral(referral)
+ }
+
+ if (Object.keys(patch).length > 0) {
+ patch.updated_at = new Date().toISOString()
+ const { data: updated, error: updateError } = await supabaseAdmin()
  .from('contacts')
- .update({ name, updated_at: new Date().toISOString() })
+ .update(patch)
  .eq('id', existingContact.id)
+ .select()
+ .single()
+ if (updateError) {
+ console.error('Error updating contact:', updateError)
+ } else if (updated) {
+ return { contact: updated, wasCreated: false }
+ }
  }
  return { contact: existingContact, wasCreated: false }
  }
@@ -909,6 +1238,8 @@ async function findOrCreateContact(
  user_id: userId,
  phone,
  name: name || phone,
+ source: sourceForReferral(referral),
+ source_details: referral,
  })
  .select()
  .single()

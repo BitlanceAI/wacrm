@@ -26,8 +26,10 @@ export default function NewBroadcastPage() {
  const [currentStep, setCurrentStep] = useState(0);
  const [template, setTemplate] = useState<MessageTemplate | null>(null);
  const [audience, setAudience] = useState<{
- type: 'all' | 'tags' | 'custom_field' | 'csv';
+ type: 'all' | 'tags' | 'custom_field' | 'csv' | 'manual' | 'inactive';
  tagIds?: string[];
+ /** Win-back window in days; only meaningful for type 'inactive'. */
+ inactiveDays?: number;
  customField?: {
  fieldId: string;
  operator: 'is' | 'is_not' | 'contains';

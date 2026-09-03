@@ -10,12 +10,14 @@ import type {
  MessageReaction,
  Contact,
  ConversationStatus,
+ ConversationPriority,
  MessageTemplate,
  Profile,
 } from "@/types";
 import {
  MessageSquare,
  ChevronDown,
+ Flag,
  UserPlus,
  Check,
  Clock,
@@ -38,6 +40,7 @@ import { MessageComposer } from "./message-composer";
 import { TemplatePicker } from "./template-picker";
 import { buildReplyPreview } from "./reply-quote";
 import { toast } from "sonner";
+import { statusChangePatch } from "@/lib/conversations/response-metrics";
 
 interface ReplyDraft {
  id: string;
@@ -112,6 +115,22 @@ function groupMessagesByDate(messages: Message[]) {
 
  return groups;
 }
+
+/**
+ * Ticket urgency (migration 017). Purely an agent signal — it drives
+ * sorting and the escalation view, not routing, so changing it never
+ * moves a thread away from whoever is already handling it.
+ */
+const PRIORITY_OPTIONS: {
+ label: string;
+ value: ConversationPriority;
+ color: string;
+}[] = [
+ { label: "Urgent", value: "urgent", color: "text-red-400" },
+ { label: "High", value: "high", color: "text-amber-400" },
+ { label: "Normal", value: "normal", color: "text-muted-foreground" },
+ { label: "Low", value: "low", color: "text-slate-500" },
+];
 
 const STATUS_OPTIONS: { label: string; value: ConversationStatus; color: string }[] = [
  { label: "Open", value: "open", color: "text-primary" },
@@ -478,14 +497,63 @@ export function MessageThread({
  if (!conversation) return;
 
  const supabase = createClient();
+ // Closing stamps the resolution (and stops the wait clock);
+ // reopening clears a stale one. See
+ // lib/conversations/response-metrics.ts.
  await supabase
  .from("conversations")
- .update({ status })
+ .update({
+ status,
+ ...statusChangePatch(
+ conversation,
+ status,
+ new Date().toISOString(),
+ user?.id ?? null,
+ ),
+ })
  .eq("id", conversation.id);
 
  onStatusChange(conversation.id, status);
+
+ // Resolving a thread is what triggers the satisfaction survey.
+ // Fire-and-forget: the route answers `sent: false` for every
+ // normal "nothing to do" case (feature off, already surveyed), so
+ // only a real failure is worth logging — and none of it should
+ // hold up the status change the agent just made.
+ if (status === "closed") {
+ void fetch("/api/support/csat", {
+ method: "POST",
+ headers: { "Content-Type": "application/json" },
+ body: JSON.stringify({ conversation_id: conversation.id }),
+ })
+ .then(async (res) => {
+ if (!res.ok) {
+ console.error("CSAT survey failed:", await res.text());
+ }
+ })
+ .catch((err) => console.error("CSAT survey request failed:", err));
+ }
  },
- [conversation, onStatusChange]
+ [conversation, onStatusChange, user?.id]
+ );
+
+ const handlePriorityChange = useCallback(
+ async (priority: ConversationPriority) => {
+ if (!conversation) return;
+ const supabase = createClient();
+ const { error } = await supabase
+ .from("conversations")
+ .update({ priority })
+ .eq("id", conversation.id);
+ if (error) {
+ toast.error("Failed to update priority");
+ return;
+ }
+ // No local mirror: the conversations realtime subscription already
+ // pushes this UPDATE back into the parent's list, which re-renders
+ // the header. A second source of truth here would drift.
+ },
+ [conversation],
  );
 
  const handleOpenTemplates = useCallback(() => {
@@ -695,6 +763,9 @@ export function MessageThread({
 
  const displayName = contact.name || contact.phone;
  const messageGroups = groupMessagesByDate(messages);
+ const currentPriority = PRIORITY_OPTIONS.find(
+ (p) => p.value === (conversation.priority ?? "normal"),
+ );
  const currentStatus = STATUS_OPTIONS.find(
  (s) => s.value === conversation.status
  );
@@ -783,6 +854,34 @@ export function MessageThread({
  <DropdownMenuItem
  key={opt.value}
  onClick={() => handleStatusChange(opt.value)}
+ className={cn("text-sm", opt.color)}
+ >
+ {opt.label}
+ </DropdownMenuItem>
+ ))}
+ </DropdownMenuContent>
+ </DropdownMenu>
+
+ {/* Priority dropdown */}
+ <DropdownMenu>
+ <DropdownMenuTrigger
+ className={cn(
+ "inline-flex h-7 items-center justify-center gap-1 rounded-md px-2 text-xs hover:bg-accent",
+ currentPriority?.color ?? "text-muted-foreground"
+ )}
+ title="Ticket priority"
+ >
+ <Flag className="h-3 w-3" />
+ <span className="hidden sm:inline">
+ {currentPriority?.label ?? "Normal"}
+ </span>
+ <ChevronDown className="h-3 w-3" />
+ </DropdownMenuTrigger>
+ <DropdownMenuContent align="end" className="border-border bg-accent">
+ {PRIORITY_OPTIONS.map((opt) => (
+ <DropdownMenuItem
+ key={opt.value}
+ onClick={() => handlePriorityChange(opt.value)}
  className={cn("text-sm", opt.color)}
  >
  {opt.label}
@@ -929,6 +1028,14 @@ export function MessageThread({
  onOpenTemplates={handleOpenTemplates}
  replyTo={replyTo}
  onClearReply={() => setReplyTo(null)}
+ // Canned replies interpolate the active contact's fields, so
+ // "/hours" can open with the customer's own name.
+ cannedPlaceholders={{
+ name: contact.name,
+ phone: contact.phone,
+ email: contact.email,
+ company: contact.company,
+ }}
  />
 
  <TemplatePicker

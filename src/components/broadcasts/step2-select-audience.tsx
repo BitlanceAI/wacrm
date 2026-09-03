@@ -9,13 +9,15 @@ import {
     Tags,
     Filter,
     Upload,
+    Keyboard,
+    Clock,
     Loader2,
     ArrowRight,
     ArrowLeft,
     X,
 } from 'lucide-react';
 
-type AudienceType = 'all' | 'tags' | 'custom_field' | 'csv';
+type AudienceType = 'all' | 'tags' | 'custom_field' | 'csv' | 'manual' | 'inactive';
 type CustomFieldOperator = 'is' | 'is_not' | 'contains';
 
 interface CustomFieldFilter {
@@ -28,6 +30,8 @@ interface AudienceConfig {
     type: AudienceType;
     tagIds?: string[];
     customField?: CustomFieldFilter;
+    /** Win-back window for type 'inactive', in days since last inbound. */
+    inactiveDays?: number;
     /** Each CSV row can carry per-contact variable values keyed by their
      * 1-based index string (e.g. "1", "2", "3") so the send loop can
      * substitute them instead of falling back to a field mapping. */
@@ -67,10 +71,22 @@ const audienceOptions: {
             icon: Filter,
         },
         {
+            type: 'inactive',
+            label: 'Win Back Inactive',
+            description: 'Contacts who haven’t messaged you in a while',
+            icon: Clock,
+        },
+        {
             type: 'csv',
             label: 'Upload CSV / Excel',
             description: 'Upload phone + variable columns (var1, var2…)',
             icon: Upload,
+        },
+        {
+            type: 'manual',
+            label: 'Enter Phone Numbers',
+            description: 'Type or paste numbers directly, one per line',
+            icon: Keyboard,
         },
     ];
 
@@ -92,6 +108,8 @@ export function Step2SelectAudience({
     const [loadingFields, setLoadingFields] = useState(false);
     const [estimatedCount, setEstimatedCount] = useState<number | null>(null);
     const [loadingCount, setLoadingCount] = useState(false);
+    /** How many contacts the estimate dropped for having opted out. */
+    const [optedOutExcluded, setOptedOutExcluded] = useState(0);
 
     // Tags are used both by the primary "Filter by Tags" audience type
     // AND by the exclude-list below — so always load once on mount.
@@ -133,6 +151,15 @@ export function Step2SelectAudience({
         try {
             const supabase = createClient();
 
+            // Contacts who asked to stop marketing. Dropped from every
+            // audience type — the send path enforces this too, so an
+            // estimate that ignored them would overstate reach.
+            const { data: optedOutRows } = await supabase
+                .from('contacts')
+                .select('id')
+                .eq('marketing_opt_in', false);
+            const optedOutIds = new Set((optedOutRows ?? []).map((r) => r.id));
+
             // Base query — produces the superset before exclude is applied.
             let baseIds: Set<string> | null = null; // null means "all contacts"
 
@@ -163,12 +190,55 @@ export function Step2SelectAudience({
                 else q = q.ilike('value', `%${value}%`);
                 const { data } = await q;
                 baseIds = new Set((data ?? []).map((r) => r.contact_id));
+            } else if (audience.type === 'inactive') {
+                // Mirrors resolveInactiveAudience: everyone minus whoever
+                // has sent an inbound message inside the window.
+                const cutoff = new Date(
+                    Date.now() - (audience.inactiveDays ?? 30) * 86_400_000,
+                ).toISOString();
+                const { data: recent } = await supabase
+                    .from('messages')
+                    .select('conversations(contact_id)')
+                    .eq('sender_type', 'customer')
+                    .gte('created_at', cutoff);
+                const activeIds = new Set(
+                    (recent ?? [])
+                        .map((r) => {
+                            const conv = r.conversations as
+                                | { contact_id: string }
+                                | { contact_id: string }[]
+                                | null;
+                            return Array.isArray(conv) ? conv[0]?.contact_id : conv?.contact_id;
+                        })
+                        .filter(Boolean) as string[],
+                );
+                const { data: allIds } = await supabase.from('contacts').select('id');
+                baseIds = new Set(
+                    (allIds ?? [])
+                        .map((c) => c.id as string)
+                        .filter((id) => !activeIds.has(id)),
+                );
             } else if (
-                audience.type === 'csv' &&
+                (audience.type === 'csv' || audience.type === 'manual') &&
                 audience.csvContacts &&
                 audience.csvContacts.length > 0
             ) {
-                setEstimatedCount(audience.csvContacts.length);
+                // CSV rows aren't contacts yet, so the opt-out overlap
+                // can only be resolved by phone.
+                const phones = audience.csvContacts
+                    .map((c) => c.phone)
+                    .filter(Boolean);
+                const { data: optedOutCsv } = await supabase
+                    .from('contacts')
+                    .select('phone')
+                    .eq('marketing_opt_in', false)
+                    .in('phone', phones.slice(0, 500));
+                const blocked = new Set(
+                    (optedOutCsv ?? []).map((r) => r.phone),
+                );
+                const reachable = phones.filter((p) => !blocked.has(p));
+                setOptedOutExcluded(phones.length - reachable.length);
+                setEstimatedCount(reachable.length);
                 return;
             } else {
                 // Partially-configured audience — wait for the user to finish.
@@ -187,17 +257,25 @@ export function Step2SelectAudience({
             }
 
             if (baseIds) {
-                const effective = [...baseIds].filter(
+                const afterTags = [...baseIds].filter(
                     (id) => !excludeSet?.has(id),
                 );
+                const effective = afterTags.filter((id) => !optedOutIds.has(id));
+                setOptedOutExcluded(afterTags.length - effective.length);
                 setEstimatedCount(effective.length);
             } else {
-                // "All" — fetch the total, then subtract exclude set if any.
+                // "All" — count only opted-in contacts, then subtract the
+                // exclude-tagged ones that weren't already dropped.
                 const { count } = await supabase
                     .from('contacts')
-                    .select('*', { count: 'exact', head: true });
+                    .select('*', { count: 'exact', head: true })
+                    .eq('marketing_opt_in', true);
                 const total = count ?? 0;
-                setEstimatedCount(excludeSet ? Math.max(0, total - excludeSet.size) : total);
+                const alsoExcluded = excludeSet
+                    ? [...excludeSet].filter((id) => !optedOutIds.has(id)).length
+                    : 0;
+                setOptedOutExcluded(optedOutIds.size);
+                setEstimatedCount(Math.max(0, total - alsoExcluded));
             }
         } finally {
             setLoadingCount(false);
@@ -207,6 +285,7 @@ export function Step2SelectAudience({
         audience.tagIds,
         audience.customField,
         audience.csvContacts,
+        audience.inactiveDays,
         audience.excludeTagIds,
     ]);
 
@@ -241,11 +320,12 @@ export function Step2SelectAudience({
 
     const isValid =
         audience.type === 'all' ||
+        audience.type === 'inactive' ||
         (audience.type === 'tags' && audience.tagIds && audience.tagIds.length > 0) ||
         (audience.type === 'custom_field' &&
             !!audience.customField?.fieldId &&
             audience.customField.value.length > 0) ||
-        (audience.type === 'csv' &&
+        ((audience.type === 'csv' || audience.type === 'manual') &&
             audience.csvContacts &&
             audience.csvContacts.length > 0);
 
@@ -277,7 +357,10 @@ export function Step2SelectAudience({
                                             ? audience.customField
                                             : undefined,
                                     csvContacts:
-                                        option.type === 'csv' ? audience.csvContacts : undefined,
+                                        option.type === audience.type &&
+                                        (option.type === 'csv' || option.type === 'manual')
+                                            ? audience.csvContacts
+                                            : undefined,
                                 })
                             }
                             className={`flex items-start gap-3 rounded-xl border p-4 text-left transition-all ${isSelected
@@ -339,6 +422,33 @@ export function Step2SelectAudience({
                 </div>
             )}
 
+            {audience.type === 'inactive' && (
+                <div className="space-y-3 rounded-xl border border-border bg-background/50 p-4">
+                    <p className="text-sm font-medium text-foreground">Inactivity window</p>
+                    <div className="flex flex-wrap items-center gap-2">
+                        {[30, 60, 90, 180].map((days) => (
+                            <button
+                                key={days}
+                                type="button"
+                                onClick={() => onUpdate({ ...audience, inactiveDays: days })}
+                                className={
+                                    (audience.inactiveDays ?? 30) === days
+                                        ? 'rounded-full border border-primary/40 bg-primary/10 px-3 py-1 text-xs text-primary'
+                                        : 'rounded-full border border-border px-3 py-1 text-xs text-muted-foreground hover:text-foreground'
+                                }
+                            >
+                                {days} days
+                            </button>
+                        ))}
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                        Measured on inbound messages only — your own broadcasts don’t
+                        count as activity, so sending one doesn’t empty this segment.
+                        Contacts who have never written are included.
+                    </p>
+                </div>
+            )}
+
             {audience.type === 'custom_field' && (
                 <div className="space-y-3 rounded-xl border border-border bg-background/50 p-4">
                     <p className="text-sm font-medium text-foreground">Custom Field Filter</p>
@@ -387,6 +497,13 @@ export function Step2SelectAudience({
                         </div>
                     )}
                 </div>
+            )}
+
+            {audience.type === 'manual' && (
+                <ManualPhoneSection
+                    csvContacts={audience.csvContacts ?? []}
+                    onChange={(contacts) => onUpdate({ ...audience, csvContacts: contacts })}
+                />
             )}
 
             {audience.type === 'csv' && (
@@ -441,12 +558,21 @@ export function Step2SelectAudience({
                         <span className="text-xs text-muted-foreground">Calculating…</span>
                     </div>
                 ) : estimatedCount !== null ? (
-                    <div className="flex items-center gap-2">
-                        <Users className="h-4 w-4 text-primary" />
-                        <span className="text-sm text-foreground">
-                            {estimatedCount.toLocaleString()}
-                        </span>
-                        <span className="text-xs text-muted-foreground">estimated recipients</span>
+                    <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                            <Users className="h-4 w-4 text-primary" />
+                            <span className="text-sm text-foreground">
+                                {estimatedCount.toLocaleString()}
+                            </span>
+                            <span className="text-xs text-muted-foreground">estimated recipients</span>
+                        </div>
+                        {optedOutExcluded > 0 && (
+                            <p className="text-xs text-amber-500">
+                                {optedOutExcluded.toLocaleString()} contact
+                                {optedOutExcluded === 1 ? '' : 's'} excluded — opted out of
+                                marketing messages.
+                            </p>
+                        )}
                     </div>
                 ) : (
                     <p className="text-xs text-muted-foreground">
@@ -688,6 +814,82 @@ function CsvUploadSection({ csvContacts, onChange }: CsvUploadSectionProps) {
                     </div>
                 </div>
             )}
+        </div>
+    );
+}
+
+/**
+ * Manual audience entry — type or paste phone numbers, one per line
+ * (commas and semicolons also split). Parsed rows reuse the CSV
+ * contact shape, so the send pipeline upserts them into contacts the
+ * same way an uploaded file would.
+ */
+interface ManualPhoneSectionProps {
+    csvContacts: { phone: string; name?: string; vars?: Record<string, string> }[];
+    onChange: (contacts: { phone: string; name?: string }[]) => void;
+}
+
+function parseManualPhones(raw: string): { valid: string[]; invalid: string[] } {
+    const valid: string[] = [];
+    const invalid: string[] = [];
+    const seen = new Set<string>();
+    for (const token of raw.split(/[\n,;]+/)) {
+        const trimmed = token.trim();
+        if (!trimmed) continue;
+        // Strip spaces, dashes, parens; keep leading + and digits.
+        const cleaned = trimmed.replace(/[\s\-().]/g, '');
+        if (/^\+?\d{7,15}$/.test(cleaned)) {
+            if (!seen.has(cleaned)) {
+                seen.add(cleaned);
+                valid.push(cleaned);
+            }
+        } else {
+            invalid.push(trimmed);
+        }
+    }
+    return { valid, invalid };
+}
+
+function ManualPhoneSection({ csvContacts, onChange }: ManualPhoneSectionProps) {
+    // The textarea is the source of truth while typing; parsed rows are
+    // pushed up on every change so the Next button and reach estimate
+    // stay live.
+    const [raw, setRaw] = useState(() => csvContacts.map((c) => c.phone).join('\n'));
+    const { valid, invalid } = parseManualPhones(raw);
+
+    function handleChange(next: string) {
+        setRaw(next);
+        onChange(parseManualPhones(next).valid.map((phone) => ({ phone })));
+    }
+
+    return (
+        <div className="space-y-2 rounded-xl border border-border bg-background/50 p-4">
+            <p className="text-sm font-medium text-foreground">Phone numbers</p>
+            <p className="text-xs text-muted-foreground">
+                One per line (commas also work). Include the country code, e.g.{' '}
+                <span className="font-mono">919876543210</span>. Numbers not yet in
+                your contacts are created automatically.
+            </p>
+            <textarea
+                value={raw}
+                onChange={(e) => handleChange(e.target.value)}
+                rows={6}
+                placeholder={'919876543210\n918765432109'}
+                className="w-full rounded-lg border border-border bg-accent p-3 font-mono text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none"
+            />
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+                <span className="text-muted-foreground">
+                    <span className="font-medium text-foreground">{valid.length}</span>{' '}
+                    valid number{valid.length === 1 ? '' : 's'}
+                </span>
+                {invalid.length > 0 && (
+                    <span className="text-amber-500">
+                        {invalid.length} skipped (not a valid phone):{' '}
+                        {invalid.slice(0, 3).join(', ')}
+                        {invalid.length > 3 ? '…' : ''}
+                    </span>
+                )}
+            </div>
         </div>
     );
 }

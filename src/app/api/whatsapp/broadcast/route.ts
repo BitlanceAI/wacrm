@@ -9,6 +9,7 @@ import {
   sanitizePhoneForMeta,
   isValidE164,
   phoneVariants,
+  phonesMatch,
   isRecipientNotAllowedError,
 } from '@/lib/whatsapp/phone-utils'
 import {
@@ -26,6 +27,57 @@ interface BroadcastResult {
   status: 'sent' | 'failed'
   whatsapp_message_id?: string
   error?: string
+  /**
+   * True when the recipient was never handed to Meta because they had
+   * opted out of marketing. Reported as `failed` so the recipient row
+   * reaches a terminal state, but counted separately in the response
+   * so the UI can tell a policy skip from a delivery failure.
+   */
+  opted_out?: boolean
+}
+
+/** Wording is user-facing — it lands in broadcast_recipients.error_message. */
+const OPTED_OUT_MESSAGE =
+  'Skipped — this contact opted out of marketing messages'
+
+/**
+ * Every phone number this user has marked opted-out.
+ *
+ * The audience resolver already filters these out, so this is the
+ * backstop for the paths it doesn't cover: a stale wizard tab, a CSV
+ * re-upload, or a direct call to this API. Sending marketing to an
+ * opted-out contact is a WhatsApp Business Policy violation, so the
+ * check has to live on the server, not only in the client that happens
+ * to build the audience.
+ */
+async function fetchOptedOutPhones(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  userId: string
+): Promise<string[]> {
+  const PAGE = 1000
+  const phones: string[] = []
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await supabase
+      .from('contacts')
+      .select('phone')
+      .eq('user_id', userId)
+      .eq('marketing_opt_in', false)
+      .order('id')
+      .range(from, from + PAGE - 1)
+    if (error) {
+      // Fail closed would block every broadcast on a transient DB
+      // hiccup; fail open and say so loudly instead. The client-side
+      // audience filter is still in force on the normal path.
+      console.error(
+        `[broadcast] opt-out lookup failed — proceeding without the server-side guard: ${error.message}`
+      )
+      return phones
+    }
+    const rows = (data ?? []) as { phone: string | null }[]
+    for (const r of rows) if (r.phone) phones.push(r.phone)
+    if (rows.length < PAGE) break
+  }
+  return phones
 }
 
 /**
@@ -282,11 +334,34 @@ export async function POST(request: Request) {
       `[broadcast] ▶ START  template="${template_name}"  lang="${template_language || 'en_US'}"  recipients=${recipients.length}  phoneNumberId="${config.phone_number_id}"`
     )
 
+    const optedOutPhones = await fetchOptedOutPhones(supabase, user.id)
+    if (optedOutPhones.length > 0) {
+      console.log(
+        `[broadcast] opt-out list loaded — ${optedOutPhones.length} contact(s) excluded from marketing`
+      )
+    }
+
     const results: BroadcastResult[] = []
     let sentCount = 0
     let failedCount = 0
+    let optedOutCount = 0
 
     for (const recipient of recipients) {
+      if (optedOutPhones.some((p) => phonesMatch(p, recipient.phone))) {
+        console.warn(
+          `[broadcast] ✗ SKIP   phone="${recipient.phone}"  reason="contact opted out of marketing"`
+        )
+        results.push({
+          phone: recipient.phone,
+          status: 'failed',
+          error: OPTED_OUT_MESSAGE,
+          opted_out: true,
+        })
+        optedOutCount++
+        failedCount++
+        continue
+      }
+
       const sanitized = sanitizePhoneForMeta(recipient.phone)
 
       if (!isValidE164(sanitized)) {
@@ -372,7 +447,7 @@ export async function POST(request: Request) {
 
     // ── Broadcast summary log ──────────────────────────────────────
     console.log(
-      `[broadcast] ■ END    template="${template_name}"  total=${recipients.length}  sent=${sentCount}  failed=${failedCount}`
+      `[broadcast] ■ END    template="${template_name}"  total=${recipients.length}  sent=${sentCount}  failed=${failedCount}  optedOut=${optedOutCount}`
     )
     if (failedCount > 0) {
       console.error('[broadcast] Failed recipients:')
@@ -388,6 +463,8 @@ export async function POST(request: Request) {
       total: recipients.length,
       sent: sentCount,
       failed: failedCount,
+      // Subset of `failed` — never reached Meta, no send quota spent.
+      opted_out: optedOutCount,
       results,
     })
   } catch (error) {

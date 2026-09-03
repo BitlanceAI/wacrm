@@ -4,8 +4,6 @@ import { NextResponse, type NextRequest } from 'next/server'
 export async function middleware(request: NextRequest) {
  let supabaseResponse = NextResponse.next({ request })
 
- console.log('Middleware running. URL:', process.env.NEXT_PUBLIC_SUPABASE_URL);
-
  const supabase = createServerClient(
  process.env.NEXT_PUBLIC_SUPABASE_URL!,
  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
@@ -25,7 +23,19 @@ export async function middleware(request: NextRequest) {
  }
  )
 
- const { data: { user } } = await supabase.auth.getUser()
+ const { data: { user }, error: authError } = await supabase.auth.getUser()
+
+ // A dead session (revoked / already-rotated refresh token) makes the
+ // browser retry the same stale cookie on every request, logging
+ // "Invalid Refresh Token" endlessly. Clear the auth cookies once so
+ // the client starts over as signed-out instead of looping.
+ if (authError && !user) {
+ for (const cookie of request.cookies.getAll()) {
+ if (cookie.name.startsWith('sb-')) {
+ supabaseResponse.cookies.delete(cookie.name)
+ }
+ }
+ }
 
  // Auth pages - redirect to dashboard if already logged in
  if (user && (

@@ -19,6 +19,8 @@ import { Textarea } from '@/components/ui/textarea';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Switch } from '@/components/ui/switch';
+import { sourceLabel, attributionSummary } from '@/lib/contacts/attribution';
 import {
     Phone,
     Mail,
@@ -31,6 +33,8 @@ import {
     Save,
     X,
     DollarSign,
+    BellOff,
+    Megaphone,
 } from 'lucide-react';
 
 interface ContactDetailViewProps {
@@ -58,6 +62,7 @@ export function ContactDetailView({
     const [editEmail, setEditEmail] = useState('');
     const [editCompany, setEditCompany] = useState('');
     const [savingDetails, setSavingDetails] = useState(false);
+    const [savingOptIn, setSavingOptIn] = useState(false);
 
     // Tags tab
     const [allTags, setAllTags] = useState<Tag[]>([]);
@@ -313,6 +318,39 @@ export function ContactDetailView({
         setSavingCustom(false);
     }
 
+    /**
+     * Marketing consent toggle. Writing `manual` as the reason keeps a
+     * keyword-driven opt-out ("STOP") distinguishable from an agent
+     * flipping the switch on the customer's behalf.
+     */
+    async function toggleMarketingOptIn(nextOptIn: boolean) {
+        if (!contactId || !contact) return;
+        setSavingOptIn(true);
+        const supabase = createClient();
+        const { error } = await supabase
+            .from('contacts')
+            .update({
+                marketing_opt_in: nextOptIn,
+                opted_out_at: nextOptIn ? null : new Date().toISOString(),
+                opt_out_reason: nextOptIn ? null : 'manual',
+                updated_at: new Date().toISOString(),
+            })
+            .eq('id', contactId);
+        setSavingOptIn(false);
+
+        if (error) {
+            toast.error('Failed to update marketing consent');
+            return;
+        }
+        setContact({ ...contact, marketing_opt_in: nextOptIn });
+        toast.success(
+            nextOptIn
+                ? 'Contact will receive broadcasts again'
+                : 'Contact opted out - broadcasts will skip them',
+        );
+        onUpdated();
+    }
+
     function getInitials(name?: string | null) {
         if (!name) return '?';
         return name
@@ -452,6 +490,56 @@ export function ContactDetailView({
                                             className="bg-accent border-border text-foreground h-8 text-sm"
                                         />
                                     </div>
+                                    {/* Marketing consent - broadcasts skip
+                                        opted-out contacts; replies inside the
+                                        24-hour service window still work. */}
+                                    <div className="rounded-lg border border-border bg-accent/40 p-3 space-y-2">
+                                        <div className="flex items-center justify-between gap-3">
+                                            <div className="min-w-0">
+                                                <p className="flex items-center gap-1.5 text-sm text-foreground">
+                                                    <Megaphone className="size-3.5 text-primary" />
+                                                    Marketing messages
+                                                </p>
+                                                <p className="text-xs text-muted-foreground mt-0.5">
+                                                    {contact.marketing_opt_in === false
+                                                        ? 'Opted out - excluded from every broadcast.'
+                                                        : 'Opted in - included in broadcast audiences.'}
+                                                </p>
+                                            </div>
+                                            <Switch
+                                                checked={contact.marketing_opt_in !== false}
+                                                disabled={savingOptIn}
+                                                onCheckedChange={toggleMarketingOptIn}
+                                            />
+                                        </div>
+                                        {contact.marketing_opt_in === false && (
+                                            <p className="flex items-center gap-1.5 text-xs text-amber-500">
+                                                <BellOff className="size-3" />
+                                                {contact.opt_out_reason === 'keyword'
+                                                    ? 'Opted out by replying with a stop keyword'
+                                                    : 'Opted out manually'}
+                                                {contact.opted_out_at
+                                                    ? ` on ${new Date(contact.opted_out_at).toLocaleDateString()}`
+                                                    : ''}
+                                            </p>
+                                        )}
+                                    </div>
+
+                                    {/* Lead source - first-touch attribution
+                                        captured from the CTWA referral on the
+                                        contact's first inbound message. */}
+                                    <div className="space-y-1.5">
+                                        <Label className="text-muted-foreground text-xs">Lead source</Label>
+                                        <p className="text-sm text-foreground">
+                                            {sourceLabel(contact.source)}
+                                        </p>
+                                        {attributionSummary(contact.source_details) && (
+                                            <p className="text-xs text-muted-foreground">
+                                                {attributionSummary(contact.source_details)}
+                                            </p>
+                                        )}
+                                    </div>
+
                                     <Button
                                         onClick={saveDetails}
                                         disabled={savingDetails}

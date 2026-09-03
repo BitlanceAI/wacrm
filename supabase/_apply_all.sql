@@ -1532,3 +1532,1067 @@ CREATE INDEX IF NOT EXISTS idx_message_templates_user_waba
 
 COMMENT ON COLUMN message_templates.waba_id IS
   'WhatsApp Business Account this template was synced from. NULL means the row was created locally in the app and has no Meta counterpart.';
+-- 014_contact_optout_and_source.sql
+--
+-- Two gaps this closes, both on `contacts`:
+--
+-- 1. MARKETING OPT-OUT (compliance)
+--    Nothing in the schema recorded whether a contact had asked to stop
+--    receiving marketing. Broadcasts sent to every resolved contact
+--    unconditionally, so a "STOP" reply had no effect — a WhatsApp
+--    Business Policy violation and the fastest route to a quality-rating
+--    downgrade. `marketing_opt_in` defaults TRUE so existing contacts
+--    keep their current (implicitly opted-in) behaviour.
+--
+-- 2. LEAD SOURCE / CTWA ATTRIBUTION
+--    Inbound messages from a Click-to-WhatsApp ad carry a `referral`
+--    object (source_id = the ad id, source_url, headline, ctwa_clid).
+--    The webhook dropped it, so ad-sourced leads were indistinguishable
+--    from someone who found the number on a business card. `source` is
+--    the coarse channel; `source_details` keeps the raw first-touch
+--    referral payload for attribution reporting.
+
+ALTER TABLE contacts
+  ADD COLUMN IF NOT EXISTS marketing_opt_in BOOLEAN NOT NULL DEFAULT TRUE,
+  ADD COLUMN IF NOT EXISTS opted_out_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS opt_out_reason TEXT,
+  ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'manual',
+  ADD COLUMN IF NOT EXISTS source_details JSONB;
+
+-- Kept as a CHECK rather than an enum so adding a channel later is an
+-- ALTER, not a type migration. Values must match ContactSource in
+-- src/types/index.ts.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'contacts_source_check' AND conrelid = 'contacts'::regclass
+  ) THEN
+    ALTER TABLE contacts
+      ADD CONSTRAINT contacts_source_check
+      CHECK (source IN ('manual', 'import', 'whatsapp', 'ctwa_ad', 'api', 'automation'));
+  END IF;
+END $$;
+
+-- Every broadcast audience query filters on this, per user.
+CREATE INDEX IF NOT EXISTS idx_contacts_user_opt_in
+  ON contacts(user_id, marketing_opt_in);
+
+-- Attribution reporting groups by source within a user.
+CREATE INDEX IF NOT EXISTS idx_contacts_user_source
+  ON contacts(user_id, source);
+
+COMMENT ON COLUMN contacts.marketing_opt_in IS
+  'FALSE once the contact asked to stop marketing messages (STOP keyword, or toggled off by an agent). Broadcasts must skip these contacts; service/utility replies inside the 24h window are unaffected.';
+COMMENT ON COLUMN contacts.opt_out_reason IS
+  'How the opt-out happened: keyword | manual | meta_block. NULL while opted in.';
+COMMENT ON COLUMN contacts.source IS
+  'Channel this contact first arrived through. ctwa_ad = Click-to-WhatsApp ad, identified by the referral object on the first inbound message.';
+COMMENT ON COLUMN contacts.source_details IS
+  'First-touch attribution payload. For ctwa_ad: {source_id, source_type, source_url, headline, body, media_type, ctwa_clid, captured_at}.';
+
+
+-- 015_conversation_response_metrics.sql
+--
+-- Problem this fixes:
+-- `conversations` recorded only the last message and an open/pending/
+-- closed status. Nothing recorded WHEN the customer first asked, WHEN
+-- an agent first answered, or WHEN the thread was resolved — so no
+-- first-response or resolution figure could be produced at all, and a
+-- thread waiting three days for a reply looked identical to one
+-- answered in thirty seconds.
+--
+-- Two distinct things are tracked here, and they answer different
+-- questions:
+--
+--   LIFETIME (set once, per conversation)
+--     first_inbound_at / first_response_at / first_response_seconds
+--     -> "how fast do we answer a new customer?"
+--
+--   CURRENT CYCLE (set and cleared repeatedly)
+--     awaiting_reply_since
+--     -> "which threads are waiting on US right now, and for how long?"
+--
+-- Resolution timing is per-close: reopening a thread clears it, and
+-- closing again overwrites it, so the figure always describes the most
+-- recent resolution rather than a stale one.
+
+ALTER TABLE conversations
+  ADD COLUMN IF NOT EXISTS first_inbound_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS first_response_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS first_response_seconds INTEGER,
+  ADD COLUMN IF NOT EXISTS awaiting_reply_since TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS resolved_by UUID REFERENCES auth.users(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS resolution_seconds INTEGER;
+
+-- "Oldest unanswered thread" is the inbox's most-used sort, and the
+-- partial index keeps it off the answered rows entirely.
+CREATE INDEX IF NOT EXISTS idx_conversations_awaiting_reply
+  ON conversations(user_id, awaiting_reply_since)
+  WHERE awaiting_reply_since IS NOT NULL;
+
+-- Reporting scans resolutions by user over a date window.
+CREATE INDEX IF NOT EXISTS idx_conversations_resolved_at
+  ON conversations(user_id, resolved_at)
+  WHERE resolved_at IS NOT NULL;
+
+COMMENT ON COLUMN conversations.first_inbound_at IS
+  'Timestamp of the very first customer message. Set once, never overwritten — the clock every first-response figure is measured from.';
+COMMENT ON COLUMN conversations.first_response_at IS
+  'First agent (human or template) reply after first_inbound_at. Set once. NULL means the conversation has never been answered.';
+COMMENT ON COLUMN conversations.first_response_seconds IS
+  'first_response_at - first_inbound_at, denormalized so reporting can aggregate without a per-row subtraction.';
+COMMENT ON COLUMN conversations.awaiting_reply_since IS
+  'Set when a customer message arrives with no reply outstanding; cleared the moment an agent replies. NULL = the ball is in the customer''s court.';
+COMMENT ON COLUMN conversations.resolved_at IS
+  'When the conversation was last moved to closed. Cleared on reopen, so NULL on an open thread even if it was closed once before.';
+COMMENT ON COLUMN conversations.resolution_seconds IS
+  'resolved_at - first_inbound_at (falling back to created_at for threads with no inbound message).';
+
+-- Backfill so existing conversations aren't invisible to reporting.
+-- Only the timestamps that can be derived from stored messages are
+-- filled; first_response_seconds follows from them.
+UPDATE conversations c
+SET first_inbound_at = sub.first_in,
+    first_response_at = sub.first_out
+FROM (
+  SELECT
+    m.conversation_id,
+    MIN(m.created_at) FILTER (WHERE m.sender_type = 'customer') AS first_in,
+    MIN(m.created_at) FILTER (WHERE m.sender_type <> 'customer') AS first_out
+  FROM messages m
+  GROUP BY m.conversation_id
+) sub
+WHERE c.id = sub.conversation_id
+  AND c.first_inbound_at IS NULL
+  AND c.first_response_at IS NULL;
+
+-- An "answer" that predates the question isn't one — that's an outbound
+-- thread the customer later replied to, so it has no response time.
+UPDATE conversations
+SET first_response_at = NULL
+WHERE first_response_at IS NOT NULL
+  AND (first_inbound_at IS NULL OR first_response_at < first_inbound_at);
+
+UPDATE conversations
+SET first_response_seconds =
+      GREATEST(0, EXTRACT(EPOCH FROM (first_response_at - first_inbound_at))::INTEGER)
+WHERE first_response_seconds IS NULL
+  AND first_response_at IS NOT NULL
+  AND first_inbound_at IS NOT NULL;
+
+-- Threads still open with an unanswered last customer message are
+-- waiting on us right now; seed the cycle clock from that message.
+UPDATE conversations c
+SET awaiting_reply_since = sub.last_in
+FROM (
+  SELECT
+    m.conversation_id,
+    MAX(m.created_at) FILTER (WHERE m.sender_type = 'customer') AS last_in,
+    MAX(m.created_at) FILTER (WHERE m.sender_type <> 'customer') AS last_out
+  FROM messages m
+  GROUP BY m.conversation_id
+) sub
+WHERE c.id = sub.conversation_id
+  AND c.status <> 'closed'
+  AND c.awaiting_reply_since IS NULL
+  AND sub.last_in IS NOT NULL
+  AND (sub.last_out IS NULL OR sub.last_in > sub.last_out);
+
+-- 016_canned_replies.sql
+--
+-- Problem this fixes:
+-- The only reusable text an agent could reach for was a Meta-approved
+-- message template — which needs Meta's approval, is the wrong tool
+-- for a free-text reply inside the 24-hour service window, and can't
+-- be edited on the fly. So the same twenty FAQ answers were retyped by
+-- hand, inconsistently, all day.
+--
+-- Canned replies are local-only text snippets addressed by a short
+-- shortcut ("/hours", "/refund"). They never touch Meta; they simply
+-- fill the composer.
+--
+-- `shortcut` is stored WITHOUT its leading slash and lowercased by the
+-- app, so "/Hours" and "hours" can't become two different rows.
+
+CREATE TABLE IF NOT EXISTS canned_replies (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  shortcut TEXT NOT NULL,
+  title TEXT NOT NULL,
+  body TEXT NOT NULL,
+  /* Bumped on each insert into the composer — drives "most used first"
+     ordering in the picker, which beats alphabetical once a desk has
+     more than a handful of snippets. */
+  usage_count INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (user_id, shortcut),
+  CONSTRAINT canned_replies_shortcut_format
+    CHECK (shortcut ~ '^[a-z0-9_-]{1,32}$'),
+  CONSTRAINT canned_replies_body_not_blank
+    CHECK (length(trim(body)) > 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_canned_replies_user
+  ON canned_replies(user_id, usage_count DESC);
+
+ALTER TABLE canned_replies ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users can manage own canned replies" ON canned_replies;
+CREATE POLICY "Users can manage own canned replies" ON canned_replies FOR ALL
+  USING (auth.uid() = user_id);
+
+COMMENT ON TABLE canned_replies IS
+  'Local free-text snippets for the inbox composer. Unlike message_templates these never go to Meta for approval and are only valid inside the 24-hour service window.';
+COMMENT ON COLUMN canned_replies.shortcut IS
+  'Lowercase, no leading slash. The composer matches on "/" + this value.';
+
+-- Atomic usage bump. Doing this client-side as read-modify-write would
+-- lose counts whenever two agents used the same snippet at once.
+CREATE OR REPLACE FUNCTION public.increment_canned_reply_usage(reply_id UUID)
+RETURNS void
+LANGUAGE sql
+SECURITY INVOKER
+AS $$
+  UPDATE canned_replies
+  SET usage_count = usage_count + 1,
+      updated_at = NOW()
+  WHERE id = reply_id;
+$$;
+
+-- 017_support_desk.sql
+--
+-- Completes the support layer on top of 015's response clocks:
+--
+--   1. TICKET FIELDS on conversations — priority, category and a
+--      resolution note. Without them every thread is equally urgent and
+--      "why did this take three days" has no answer after the fact.
+--
+--   2. INBOX SETTINGS — business hours, away message and CSAT config,
+--      one row per user. Previously the CRM had no concept of being
+--      closed: a message at 2am looked exactly like one at 2pm, and the
+--      "over 4 hours unanswered" figure counted the night shift nobody
+--      works.
+--
+--   3. CSAT RESPONSES — the survey sent after a thread is resolved.
+--      Scores arrive as interactive button taps (reply id "csat:N"),
+--      which the webhook already parses into interactive_reply_id.
+
+-- ── 1. Ticket fields ────────────────────────────────────────────────
+ALTER TABLE conversations
+  ADD COLUMN IF NOT EXISTS priority TEXT NOT NULL DEFAULT 'normal',
+  ADD COLUMN IF NOT EXISTS category TEXT,
+  ADD COLUMN IF NOT EXISTS resolution_note TEXT,
+  /* Rate-limits the away auto-reply so a customer sending six messages
+     overnight gets one "we're closed", not six. */
+  ADD COLUMN IF NOT EXISTS last_away_sent_at TIMESTAMPTZ;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'conversations_priority_check'
+      AND conrelid = 'conversations'::regclass
+  ) THEN
+    ALTER TABLE conversations
+      ADD CONSTRAINT conversations_priority_check
+      CHECK (priority IN ('low', 'normal', 'high', 'urgent'));
+  END IF;
+END $$;
+
+-- The inbox filters by priority within a user; normal-priority threads
+-- are the overwhelming majority so they're excluded from the index.
+CREATE INDEX IF NOT EXISTS idx_conversations_priority
+  ON conversations(user_id, priority)
+  WHERE priority <> 'normal';
+
+COMMENT ON COLUMN conversations.priority IS
+  'Agent-set urgency: low | normal | high | urgent. Does not affect routing on its own — it drives inbox sorting and the escalation view.';
+COMMENT ON COLUMN conversations.last_away_sent_at IS
+  'When the out-of-hours auto-reply last went out on this thread. Compared against inbox_settings.away_cooldown_minutes so a customer is never told twice in one night.';
+
+-- ── 2. Inbox settings ───────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS inbox_settings (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+
+  /* IANA zone. Business hours are meaningless without one — 09:00 has
+     to be 09:00 somewhere specific, and the server's clock is UTC. */
+  timezone TEXT NOT NULL DEFAULT 'Asia/Kolkata',
+
+  /* [{ dow: 0..6 (0=Mon), closed: bool, open: "HH:mm", close: "HH:mm" }]
+     Kept as JSONB rather than seven columns so a future "second shift"
+     or per-day multiple windows doesn't need another migration. */
+  business_hours JSONB NOT NULL DEFAULT '[
+    {"dow":0,"closed":false,"open":"09:00","close":"18:00"},
+    {"dow":1,"closed":false,"open":"09:00","close":"18:00"},
+    {"dow":2,"closed":false,"open":"09:00","close":"18:00"},
+    {"dow":3,"closed":false,"open":"09:00","close":"18:00"},
+    {"dow":4,"closed":false,"open":"09:00","close":"18:00"},
+    {"dow":5,"closed":false,"open":"10:00","close":"14:00"},
+    {"dow":6,"closed":true,"open":"09:00","close":"18:00"}
+  ]'::jsonb,
+
+  away_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  away_message TEXT NOT NULL DEFAULT
+    'Thanks for your message! Our team is away right now. We''ll reply as soon as we''re back.',
+  away_cooldown_minutes INTEGER NOT NULL DEFAULT 240,
+
+  csat_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  csat_question TEXT NOT NULL DEFAULT
+    'How would you rate the support you received today?',
+
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (user_id),
+  CONSTRAINT inbox_settings_cooldown_check
+    CHECK (away_cooldown_minutes BETWEEN 0 AND 10080)
+);
+
+ALTER TABLE inbox_settings ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users can manage own inbox settings" ON inbox_settings;
+CREATE POLICY "Users can manage own inbox settings" ON inbox_settings FOR ALL
+  USING (auth.uid() = user_id);
+
+COMMENT ON TABLE inbox_settings IS
+  'Per-account support desk configuration: when the desk is open, what to say when it is not, and whether to survey customers after a thread is resolved.';
+
+-- ── 3. CSAT responses ───────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS csat_responses (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  conversation_id UUID NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  contact_id UUID REFERENCES contacts(id) ON DELETE SET NULL,
+
+  /* 1-5. NULL until the customer taps a button — a sent-but-unanswered
+     survey is itself a signal (response rate), so the row is created at
+     send time rather than on reply. */
+  score INTEGER,
+  comment TEXT,
+  sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  responded_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  CONSTRAINT csat_score_range CHECK (score IS NULL OR score BETWEEN 1 AND 5)
+);
+
+-- At most one unanswered survey per conversation: re-closing a thread
+-- must not stack a second survey on top of one the customer hasn't
+-- answered yet.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_csat_one_pending_per_conversation
+  ON csat_responses(conversation_id)
+  WHERE responded_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_csat_user_responded
+  ON csat_responses(user_id, responded_at DESC)
+  WHERE responded_at IS NOT NULL;
+
+ALTER TABLE csat_responses ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users can manage own csat responses" ON csat_responses;
+CREATE POLICY "Users can manage own csat responses" ON csat_responses FOR ALL
+  USING (auth.uid() = user_id);
+
+COMMENT ON TABLE csat_responses IS
+  'Post-resolution satisfaction surveys. One row per survey SENT; score/responded_at fill in when the customer taps a rating button (interactive reply id "csat:N").';
+
+-- 018_appointments.sql
+--
+-- Bookings & appointments. Nothing in the CRM previously modelled "a
+-- thing happening at a future time for a specific contact": the only
+-- scheduling primitives were broadcast send-at (one campaign, one
+-- moment) and cron-triggered automations (everybody, on a clock).
+-- Neither can express "remind THIS customer 24 hours before THEIR
+-- 3pm slot on Thursday".
+--
+-- Two tables:
+--   appointments          — the booking itself
+--   appointment_reminders — one row per scheduled nudge, each with its
+--                           own absolute send_at so the cron sweep is a
+--                           single indexed "what is due?" query rather
+--                           than a recomputation over every booking.
+--
+-- Reminders are materialized rows, not offsets computed at sweep time,
+-- because rescheduling a booking must visibly move its reminders (and
+-- must not re-send one that already went out).
+
+CREATE TABLE IF NOT EXISTS appointments (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+  /* Optional: the thread the booking came out of, so a reminder can be
+     posted into the same conversation the customer already knows. */
+  conversation_id UUID REFERENCES conversations(id) ON DELETE SET NULL,
+
+  title TEXT NOT NULL,
+  notes TEXT,
+  location TEXT,
+
+  starts_at TIMESTAMPTZ NOT NULL,
+  ends_at TIMESTAMPTZ,
+  /* The zone the booking was made in — needed to render "3pm" back to
+     the customer correctly, which a UTC instant alone cannot do. */
+  timezone TEXT NOT NULL DEFAULT 'Asia/Kolkata',
+
+  status TEXT NOT NULL DEFAULT 'scheduled'
+    CHECK (status IN ('scheduled', 'confirmed', 'completed', 'cancelled', 'no_show')),
+
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  CONSTRAINT appointments_end_after_start
+    CHECK (ends_at IS NULL OR ends_at > starts_at)
+);
+
+CREATE INDEX IF NOT EXISTS idx_appointments_user_start
+  ON appointments(user_id, starts_at);
+CREATE INDEX IF NOT EXISTS idx_appointments_contact
+  ON appointments(contact_id, starts_at DESC);
+
+ALTER TABLE appointments ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users can manage own appointments" ON appointments;
+CREATE POLICY "Users can manage own appointments" ON appointments FOR ALL
+  USING (auth.uid() = user_id);
+
+-- ── Reminders ───────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS appointment_reminders (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  appointment_id UUID NOT NULL REFERENCES appointments(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+
+  /* Absolute instant, derived from starts_at - offset at write time.
+     Storing it resolved is what makes the cron sweep one index scan. */
+  send_at TIMESTAMPTZ NOT NULL,
+  /* Kept alongside send_at so a reschedule can rebuild the same set of
+     nudges without the caller having to remember what they were. */
+  offset_minutes INTEGER NOT NULL,
+
+  /* 'text' only works inside the 24-hour service window. A reminder
+     for a booking a week out will almost always fall outside it, so
+     'template' (a Meta-approved utility template) is the correct
+     channel there — hence both are supported rather than assumed. */
+  channel TEXT NOT NULL DEFAULT 'text' CHECK (channel IN ('text', 'template')),
+  message_text TEXT,
+  template_name TEXT,
+  template_language TEXT DEFAULT 'en_US',
+  /* Positional {{1}},{{2}}… values for the template, in order. */
+  template_params JSONB,
+
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending', 'sent', 'failed', 'skipped', 'cancelled')),
+  sent_at TIMESTAMPTZ,
+  error_message TEXT,
+  /* Guards against a double-send when two cron ticks overlap. */
+  claimed_at TIMESTAMPTZ,
+
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  CONSTRAINT appointment_reminders_payload_present CHECK (
+    (channel = 'text' AND message_text IS NOT NULL)
+    OR (channel = 'template' AND template_name IS NOT NULL)
+  )
+);
+
+-- The cron sweep's only query: pending reminders whose time has come.
+-- Partial index keeps it off the (eventually much larger) sent history.
+CREATE INDEX IF NOT EXISTS idx_appointment_reminders_due
+  ON appointment_reminders(send_at)
+  WHERE status = 'pending';
+
+CREATE INDEX IF NOT EXISTS idx_appointment_reminders_appointment
+  ON appointment_reminders(appointment_id);
+
+ALTER TABLE appointment_reminders ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users can manage own appointment reminders" ON appointment_reminders;
+CREATE POLICY "Users can manage own appointment reminders" ON appointment_reminders FOR ALL
+  USING (auth.uid() = user_id);
+
+COMMENT ON TABLE appointment_reminders IS
+  'Materialized per-booking nudges. send_at is absolute so the cron sweep is one indexed query; rescheduling rebuilds the pending rows and leaves already-sent ones alone.';
+COMMENT ON COLUMN appointment_reminders.claimed_at IS
+  'Set the moment a cron tick picks the row up. A second overlapping tick skips claimed rows, so a slow Meta call cannot produce two identical reminders.';
+
+-- Cancelling a booking must silence its future reminders. Doing this in
+-- a trigger rather than in the API means it holds no matter who does the
+-- cancelling — the UI, a cron sweep, or a hand-run SQL statement.
+CREATE OR REPLACE FUNCTION public.cancel_reminders_on_appointment_cancel()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF NEW.status IN ('cancelled', 'completed', 'no_show')
+     AND OLD.status IS DISTINCT FROM NEW.status THEN
+    UPDATE appointment_reminders
+    SET status = 'cancelled'
+    WHERE appointment_id = NEW.id
+      AND status = 'pending';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_cancel_reminders ON appointments;
+CREATE TRIGGER trg_cancel_reminders
+  AFTER UPDATE OF status ON appointments
+  FOR EACH ROW
+  EXECUTE FUNCTION public.cancel_reminders_on_appointment_cancel();
+
+-- 019_billing.sql
+--
+-- Payments, invoices and renewals.
+--
+-- Design decisions worth stating up front:
+--
+-- * NO GATEWAY INTEGRATION. This ships the parts that are provider-
+--   agnostic — the invoice record, the reminder schedule, the renewal
+--   clock — plus UPI deep links, which need no gateway account at all.
+--   `payment_url` holds a link from whatever the account already uses
+--   (Razorpay, Stripe, Cashfree, a bank page). Wiring a specific
+--   provider's API is a later, separate decision; nothing here has to
+--   change when it happens.
+--
+-- * MONEY IN INTEGER MINOR UNITS. amount_minor is paise/cents. Floating
+--   point money is a bug waiting for a rounding error, and NUMERIC
+--   round-trips through JSON as a string that JS then coerces anyway.
+--
+-- * INVOICE NUMBERS ARE ALLOCATED IN THE DATABASE. A number generated
+--   client-side would collide the first time two invoices are raised
+--   at once, and invoice numbers are exactly the thing that must not
+--   collide.
+
+-- ── Billing settings ────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS billing_settings (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+
+  currency TEXT NOT NULL DEFAULT 'INR',
+  invoice_prefix TEXT NOT NULL DEFAULT 'INV-',
+  /* Next number to hand out. Bumped inside next_invoice_number(). */
+  invoice_next_number INTEGER NOT NULL DEFAULT 1,
+
+  /* UPI collection details. With these set, every invoice can carry a
+     working pay link without the account signing up for anything. */
+  upi_vpa TEXT,
+  upi_payee_name TEXT,
+
+  /* Free text appended to invoice messages — bank details, GST notes,
+     "please share the screenshot after paying", whatever the business
+     already says by hand today. */
+  payment_instructions TEXT,
+
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (user_id),
+  CONSTRAINT billing_settings_next_number_positive
+    CHECK (invoice_next_number > 0)
+);
+
+ALTER TABLE billing_settings ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users can manage own billing settings" ON billing_settings;
+CREATE POLICY "Users can manage own billing settings" ON billing_settings FOR ALL
+  USING (auth.uid() = user_id);
+
+-- ── Invoices ────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS invoices (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+  conversation_id UUID REFERENCES conversations(id) ON DELETE SET NULL,
+  /* Set when the invoice was raised automatically by a renewal. */
+  subscription_id UUID,
+
+  number TEXT NOT NULL,
+  description TEXT NOT NULL,
+  amount_minor BIGINT NOT NULL,
+  currency TEXT NOT NULL DEFAULT 'INR',
+
+  status TEXT NOT NULL DEFAULT 'draft'
+    CHECK (status IN ('draft', 'sent', 'paid', 'overdue', 'void', 'refunded')),
+  due_date DATE,
+  payment_url TEXT,
+  /* Gateway/bank reference once paid — a UTR, a payment id, a cheque
+     number. Free text on purpose: it comes from outside this system. */
+  external_reference TEXT,
+
+  sent_at TIMESTAMPTZ,
+  paid_at TIMESTAMPTZ,
+  notes TEXT,
+
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (user_id, number),
+  CONSTRAINT invoices_amount_positive CHECK (amount_minor > 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_invoices_user_status
+  ON invoices(user_id, status, due_date);
+CREATE INDEX IF NOT EXISTS idx_invoices_contact
+  ON invoices(contact_id, created_at DESC);
+
+ALTER TABLE invoices ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users can manage own invoices" ON invoices;
+CREATE POLICY "Users can manage own invoices" ON invoices FOR ALL
+  USING (auth.uid() = user_id);
+
+COMMENT ON COLUMN invoices.amount_minor IS
+  'Amount in the currency''s minor unit (paise for INR, cents for USD). Integer — never store money as a float.';
+
+-- ── Invoice reminders ───────────────────────────────────────────────
+-- Same materialized-row design as appointment_reminders: absolute
+-- send_at, claimed_at against double-sends. Deliberately a separate
+-- table rather than a shared polymorphic one — a dunning reminder and
+-- an appointment nudge have different lifecycles (dunning stops the
+-- instant an invoice is paid, from anywhere), and a shared table would
+-- need a discriminator on every query for no gain.
+CREATE TABLE IF NOT EXISTS invoice_reminders (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  invoice_id UUID NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+
+  send_at TIMESTAMPTZ NOT NULL,
+  /* Negative = before the due date, positive = after (dunning). */
+  offset_days INTEGER NOT NULL,
+
+  channel TEXT NOT NULL DEFAULT 'text' CHECK (channel IN ('text', 'template')),
+  message_text TEXT,
+  template_name TEXT,
+  template_language TEXT DEFAULT 'en_US',
+
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending', 'sent', 'failed', 'skipped', 'cancelled')),
+  sent_at TIMESTAMPTZ,
+  error_message TEXT,
+  claimed_at TIMESTAMPTZ,
+
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_invoice_reminders_due
+  ON invoice_reminders(send_at)
+  WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_invoice_reminders_invoice
+  ON invoice_reminders(invoice_id);
+
+ALTER TABLE invoice_reminders ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users can manage own invoice reminders" ON invoice_reminders;
+CREATE POLICY "Users can manage own invoice reminders" ON invoice_reminders FOR ALL
+  USING (auth.uid() = user_id);
+
+-- Chasing someone for money they have already paid is the single worst
+-- failure mode here, so it is enforced by trigger rather than by
+-- remembering to cancel reminders at every call site.
+CREATE OR REPLACE FUNCTION public.cancel_reminders_on_invoice_settled()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF NEW.status IN ('paid', 'void', 'refunded')
+     AND OLD.status IS DISTINCT FROM NEW.status THEN
+    UPDATE invoice_reminders
+    SET status = 'cancelled'
+    WHERE invoice_id = NEW.id
+      AND status = 'pending';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_cancel_invoice_reminders ON invoices;
+CREATE TRIGGER trg_cancel_invoice_reminders
+  AFTER UPDATE OF status ON invoices
+  FOR EACH ROW
+  EXECUTE FUNCTION public.cancel_reminders_on_invoice_settled();
+
+-- ── Subscriptions / renewals ────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS subscriptions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+
+  plan_name TEXT NOT NULL,
+  amount_minor BIGINT NOT NULL,
+  currency TEXT NOT NULL DEFAULT 'INR',
+
+  interval TEXT NOT NULL DEFAULT 'monthly'
+    CHECK (interval IN ('weekly', 'monthly', 'quarterly', 'yearly')),
+  next_renewal_date DATE NOT NULL,
+
+  status TEXT NOT NULL DEFAULT 'active'
+    CHECK (status IN ('active', 'paused', 'cancelled')),
+
+  /* Raise an invoice automatically on the renewal date. Off by default:
+     silently billing a customer is not something to opt anyone into. */
+  auto_invoice BOOLEAN NOT NULL DEFAULT FALSE,
+  /* How many days ahead of the renewal to warn the customer. */
+  reminder_days_before INTEGER NOT NULL DEFAULT 3,
+
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  CONSTRAINT subscriptions_amount_positive CHECK (amount_minor > 0),
+  CONSTRAINT subscriptions_reminder_days_sane
+    CHECK (reminder_days_before BETWEEN 0 AND 90)
+);
+
+CREATE INDEX IF NOT EXISTS idx_subscriptions_due
+  ON subscriptions(next_renewal_date)
+  WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS idx_subscriptions_user
+  ON subscriptions(user_id, status);
+
+ALTER TABLE subscriptions ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users can manage own subscriptions" ON subscriptions;
+CREATE POLICY "Users can manage own subscriptions" ON subscriptions FOR ALL
+  USING (auth.uid() = user_id);
+
+-- ── Invoice number allocation ───────────────────────────────────────
+-- Atomic: the UPDATE ... RETURNING takes a row lock, so two concurrent
+-- invoice creations get consecutive numbers instead of the same one.
+-- SECURITY DEFINER so the counter row can be created on first use even
+-- though the caller's RLS policy is what governs the rest of billing.
+CREATE OR REPLACE FUNCTION public.next_invoice_number(p_user_id UUID)
+RETURNS TEXT
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_prefix TEXT;
+  v_number INTEGER;
+BEGIN
+  IF p_user_id IS DISTINCT FROM auth.uid() THEN
+    RAISE EXCEPTION 'not authorised to allocate invoice numbers for another account';
+  END IF;
+
+  INSERT INTO billing_settings (user_id)
+  VALUES (p_user_id)
+  ON CONFLICT (user_id) DO NOTHING;
+
+  UPDATE billing_settings
+  SET invoice_next_number = invoice_next_number + 1,
+      updated_at = NOW()
+  WHERE user_id = p_user_id
+  RETURNING invoice_prefix, invoice_next_number - 1
+  INTO v_prefix, v_number;
+
+  RETURN v_prefix || LPAD(v_number::TEXT, 4, '0');
+END;
+$$;
+
+COMMENT ON FUNCTION public.next_invoice_number(UUID) IS
+  'Allocates the next invoice number for a user, atomically. Refuses to allocate for any account other than the caller''s.';
+
+-- 020_commerce.sql
+--
+-- Catalog and orders — the "share catalogs and close deals in chat"
+-- half of the product promise.
+--
+-- How this fits Meta's model: the actual product catalog lives in Meta
+-- Commerce Manager, and WhatsApp product messages reference items by
+-- `retailer_id` within a `catalog_id`. This schema therefore mirrors
+-- the catalog rather than owning it — `retailer_id` is the join key,
+-- and everything else here (price, name, image) is a local copy kept
+-- for display and for order-total arithmetic when Meta's payload
+-- gives us only ids and quantities.
+--
+-- Orders arrive as an inbound webhook message of type `order` when a
+-- customer sends a cart. Nothing in the CRM previously parsed that
+-- message type, so carts were silently dropped on the floor.
+
+CREATE TABLE IF NOT EXISTS products (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+
+  /* The id used inside the Meta catalog. This — not our UUID — is what
+     comes back on an order, so it has to be unique per account. */
+  retailer_id TEXT NOT NULL,
+  catalog_id TEXT,
+
+  name TEXT NOT NULL,
+  description TEXT,
+  price_minor BIGINT NOT NULL,
+  currency TEXT NOT NULL DEFAULT 'INR',
+  image_url TEXT,
+  in_stock BOOLEAN NOT NULL DEFAULT TRUE,
+
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (user_id, retailer_id),
+  CONSTRAINT products_price_positive CHECK (price_minor >= 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_products_user ON products(user_id, name);
+
+ALTER TABLE products ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users can manage own products" ON products;
+CREATE POLICY "Users can manage own products" ON products FOR ALL
+  USING (auth.uid() = user_id);
+
+COMMENT ON COLUMN products.retailer_id IS
+  'Content ID / SKU inside the Meta catalog. Orders reference this, so it is the real primary key from WhatsApp''s point of view.';
+
+-- ── Orders ──────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS orders (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+  conversation_id UUID REFERENCES conversations(id) ON DELETE SET NULL,
+
+  /* Meta's message id for the cart message. Unique so a webhook replay
+     updates nothing instead of duplicating the order. */
+  wa_message_id TEXT,
+  catalog_id TEXT,
+
+  /* Denormalized from the items at insert time. Recomputing on read
+     would silently change historical totals if a product's price is
+     later edited — an order is a record of what was agreed. */
+  total_minor BIGINT NOT NULL DEFAULT 0,
+  currency TEXT NOT NULL DEFAULT 'INR',
+  /* The note the customer typed alongside their cart. */
+  customer_note TEXT,
+
+  status TEXT NOT NULL DEFAULT 'received'
+    CHECK (status IN ('received', 'confirmed', 'paid', 'shipped', 'completed', 'cancelled')),
+  /* Set when an invoice is raised from this order. */
+  invoice_id UUID REFERENCES invoices(id) ON DELETE SET NULL,
+
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (wa_message_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_orders_user_status
+  ON orders(user_id, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_orders_contact
+  ON orders(contact_id, created_at DESC);
+
+ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users can manage own orders" ON orders;
+CREATE POLICY "Users can manage own orders" ON orders FOR ALL
+  USING (auth.uid() = user_id);
+
+CREATE TABLE IF NOT EXISTS order_items (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  order_id UUID NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+
+  /* Referenced by retailer_id, not by FK: a customer can order an item
+     that was never mirrored into `products` (added in Commerce Manager
+     but not here). Dropping that line would understate the order. */
+  retailer_id TEXT NOT NULL,
+  product_id UUID REFERENCES products(id) ON DELETE SET NULL,
+
+  /* Name and price captured at order time. */
+  name TEXT,
+  quantity INTEGER NOT NULL DEFAULT 1,
+  unit_price_minor BIGINT NOT NULL DEFAULT 0,
+  currency TEXT NOT NULL DEFAULT 'INR',
+
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  CONSTRAINT order_items_quantity_positive CHECK (quantity > 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id);
+
+ALTER TABLE order_items ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users can manage own order items" ON order_items;
+CREATE POLICY "Users can manage own order items" ON order_items FOR ALL
+  USING (EXISTS (
+    SELECT 1 FROM orders
+    WHERE orders.id = order_items.order_id
+      AND orders.user_id = auth.uid()
+  ));
+
+COMMENT ON TABLE order_items IS
+  'Line items captured from the customer''s WhatsApp cart. Name and unit price are snapshots — editing a product later must not rewrite past orders.';
+
+-- Default catalog for product messages, stored next to the rest of the
+-- WhatsApp connection rather than in a new table.
+ALTER TABLE whatsapp_config
+  ADD COLUMN IF NOT EXISTS catalog_id TEXT;
+
+COMMENT ON COLUMN whatsapp_config.catalog_id IS
+  'Meta Commerce Manager catalog id used when sending catalog and product messages.';
+
+-- 021_retention.sql
+--
+-- Loyalty and coupons — the "run loyalty programmes and drive
+-- re-engagement" half of retention. (The other half, behavioural
+-- win-back segments, needs no schema: it is derived from the message
+-- history already in `messages`.)
+--
+-- The ledger design is the important decision here. `points_balance`
+-- is a cached total, and every change to it is also written as an
+-- immutable row in `loyalty_transactions`. A balance with no ledger
+-- behind it is unauditable: when a customer says "I had 500 points",
+-- there has to be something to check that against. The balance is kept
+-- denormalized anyway because the alternative — summing the ledger on
+-- every read — makes the contact list quadratic.
+
+CREATE TABLE IF NOT EXISTS loyalty_accounts (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+
+  /* Current spendable balance. Maintained by the ledger trigger below,
+     never written directly. */
+  points_balance INTEGER NOT NULL DEFAULT 0,
+  /* Total ever earned — drives tier, and unlike the balance it never
+     goes down when points are spent. Someone who earned and redeemed
+     10,000 points is still a top-tier customer. */
+  lifetime_points INTEGER NOT NULL DEFAULT 0,
+
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (user_id, contact_id),
+  CONSTRAINT loyalty_balance_non_negative CHECK (points_balance >= 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_loyalty_accounts_user
+  ON loyalty_accounts(user_id, points_balance DESC);
+
+ALTER TABLE loyalty_accounts ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users can manage own loyalty accounts" ON loyalty_accounts;
+CREATE POLICY "Users can manage own loyalty accounts" ON loyalty_accounts FOR ALL
+  USING (auth.uid() = user_id);
+
+CREATE TABLE IF NOT EXISTS loyalty_transactions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id UUID NOT NULL REFERENCES loyalty_accounts(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+
+  /* Positive = earned, negative = redeemed or corrected away. */
+  points INTEGER NOT NULL,
+  reason TEXT NOT NULL,
+  /* Free-form link back to what caused it — an order id, an invoice
+     number, an agent's note. */
+  reference TEXT,
+
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  CONSTRAINT loyalty_transaction_non_zero CHECK (points <> 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_loyalty_transactions_account
+  ON loyalty_transactions(account_id, created_at DESC);
+
+ALTER TABLE loyalty_transactions ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users can manage own loyalty transactions" ON loyalty_transactions;
+CREATE POLICY "Users can manage own loyalty transactions" ON loyalty_transactions FOR ALL
+  USING (auth.uid() = user_id);
+
+-- Balance follows the ledger, not the other way round. Doing this in a
+-- trigger means the two cannot disagree regardless of which surface
+-- writes the transaction.
+CREATE OR REPLACE FUNCTION public.apply_loyalty_transaction()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  UPDATE loyalty_accounts
+  SET points_balance = points_balance + NEW.points,
+      /* Only earnings raise the lifetime figure. */
+      lifetime_points = lifetime_points + GREATEST(NEW.points, 0),
+      updated_at = NOW()
+  WHERE id = NEW.account_id;
+
+  /* The CHECK on points_balance turns an over-redemption into an error
+     here, which is correct: refusing the transaction is far better than
+     letting a balance go negative. */
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_apply_loyalty_transaction ON loyalty_transactions;
+CREATE TRIGGER trg_apply_loyalty_transaction
+  AFTER INSERT ON loyalty_transactions
+  FOR EACH ROW
+  EXECUTE FUNCTION public.apply_loyalty_transaction();
+
+-- ── Coupons ─────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS coupons (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+
+  /* Stored uppercased by the app so "save10" and "SAVE10" can't become
+     two coupons a customer would reasonably expect to be one. */
+  code TEXT NOT NULL,
+  description TEXT,
+
+  discount_type TEXT NOT NULL CHECK (discount_type IN ('percent', 'fixed')),
+  /* percent: 1-100. fixed: an amount in minor units. */
+  discount_value INTEGER NOT NULL,
+  currency TEXT NOT NULL DEFAULT 'INR',
+
+  /* NULL = unlimited. */
+  max_redemptions INTEGER,
+  redeemed_count INTEGER NOT NULL DEFAULT 0,
+  once_per_contact BOOLEAN NOT NULL DEFAULT TRUE,
+
+  starts_at TIMESTAMPTZ,
+  expires_at TIMESTAMPTZ,
+  active BOOLEAN NOT NULL DEFAULT TRUE,
+
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (user_id, code),
+  CONSTRAINT coupons_value_positive CHECK (discount_value > 0),
+  CONSTRAINT coupons_percent_range
+    CHECK (discount_type <> 'percent' OR discount_value <= 100),
+  CONSTRAINT coupons_window_ordered
+    CHECK (starts_at IS NULL OR expires_at IS NULL OR expires_at > starts_at)
+);
+
+CREATE INDEX IF NOT EXISTS idx_coupons_user_active
+  ON coupons(user_id, active, expires_at);
+
+ALTER TABLE coupons ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users can manage own coupons" ON coupons;
+CREATE POLICY "Users can manage own coupons" ON coupons FOR ALL
+  USING (auth.uid() = user_id);
+
+CREATE TABLE IF NOT EXISTS coupon_redemptions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  coupon_id UUID NOT NULL REFERENCES coupons(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  contact_id UUID REFERENCES contacts(id) ON DELETE SET NULL,
+  order_id UUID REFERENCES orders(id) ON DELETE SET NULL,
+
+  /* What the discount was actually worth, resolved at redemption. A
+     percentage coupon's value depends on the order, so recomputing it
+     later would give a different answer. */
+  discount_applied_minor BIGINT,
+
+  redeemed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Enforces once_per_contact at the DB level for the common case. A
+-- coupon that allows repeat use simply won't have this violated,
+-- because the app only inserts a second row for those.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_coupon_once_per_contact
+  ON coupon_redemptions(coupon_id, contact_id)
+  WHERE contact_id IS NOT NULL;
+
+ALTER TABLE coupon_redemptions ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users can manage own coupon redemptions" ON coupon_redemptions;
+CREATE POLICY "Users can manage own coupon redemptions" ON coupon_redemptions FOR ALL
+  USING (auth.uid() = user_id);
+
+-- Redemption count follows its ledger too, for the same reason as the
+-- loyalty balance: max_redemptions is only meaningful if the count
+-- cannot drift from reality.
+CREATE OR REPLACE FUNCTION public.bump_coupon_redeemed_count()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  UPDATE coupons
+  SET redeemed_count = redeemed_count + 1,
+      updated_at = NOW()
+  WHERE id = NEW.coupon_id;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_bump_coupon_redeemed ON coupon_redemptions;
+CREATE TRIGGER trg_bump_coupon_redeemed
+  AFTER INSERT ON coupon_redemptions
+  FOR EACH ROW
+  EXECUTE FUNCTION public.bump_coupon_redeemed_count();
+
+COMMENT ON TABLE coupon_redemptions IS
+  'One row per use. The unique index enforces once-per-contact; discount_applied_minor is captured at redemption because a percentage discount cannot be recomputed later.';

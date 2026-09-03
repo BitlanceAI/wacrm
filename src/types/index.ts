@@ -16,6 +16,20 @@ export interface Profile {
  created_at: string;
 }
 
+/**
+ * Channel a contact first arrived through. Mirrors the
+ * contacts_source_check constraint added in migration 014.
+ */
+export type ContactSource =
+ | 'manual'
+ | 'import'
+ | 'whatsapp'
+ | 'ctwa_ad'
+ | 'api'
+ | 'automation';
+
+export type OptOutReason = 'keyword' | 'manual' | 'meta_block';
+
 export interface Contact {
  id: string;
  user_id: string;
@@ -24,6 +38,17 @@ export interface Contact {
  email?: string;
  company?: string;
  avatar_url?: string;
+ /**
+  * FALSE once the contact asked to stop marketing messages. Broadcast
+  * audiences must exclude these contacts — replies inside the 24-hour
+  * service window are unaffected.
+  */
+ marketing_opt_in?: boolean;
+ opted_out_at?: string | null;
+ opt_out_reason?: OptOutReason | null;
+ source?: ContactSource;
+ /** First-touch attribution payload; see lib/whatsapp/referral.ts. */
+ source_details?: Record<string, unknown> | null;
  created_at: string;
  updated_at: string;
 }
@@ -66,7 +91,127 @@ export interface ContactNote {
  created_at: string;
 }
 
+/**
+ * Local free-text snippet for the inbox composer (migration 016).
+ * Unlike MessageTemplate these never go to Meta for approval and are
+ * only usable inside the 24-hour service window.
+ */
+export interface CannedReply {
+ id: string;
+ user_id: string;
+ /** Lowercase, no leading slash. Matched as "/" + shortcut. */
+ shortcut: string;
+ title: string;
+ body: string;
+ usage_count: number;
+ created_at: string;
+ updated_at: string;
+}
+
 export type ConversationStatus = 'open' | 'pending' | 'closed';
+
+/** Billing (migration 019). Money is always integer minor units. */
+export type InvoiceStatus =
+ | 'draft'
+ | 'sent'
+ | 'paid'
+ | 'overdue'
+ | 'void'
+ | 'refunded';
+
+export interface Invoice {
+ id: string;
+ user_id: string;
+ contact_id: string;
+ conversation_id?: string | null;
+ subscription_id?: string | null;
+ number: string;
+ description: string;
+ /** Paise / cents. Never a float. */
+ amount_minor: number;
+ currency: string;
+ status: InvoiceStatus;
+ due_date?: string | null;
+ payment_url?: string | null;
+ external_reference?: string | null;
+ sent_at?: string | null;
+ paid_at?: string | null;
+ notes?: string | null;
+ created_at: string;
+ updated_at: string;
+ contact?: Pick<Contact, 'id' | 'name' | 'phone'>;
+}
+
+export type RenewalInterval = 'weekly' | 'monthly' | 'quarterly' | 'yearly';
+
+export interface Subscription {
+ id: string;
+ user_id: string;
+ contact_id: string;
+ plan_name: string;
+ amount_minor: number;
+ currency: string;
+ interval: RenewalInterval;
+ next_renewal_date: string;
+ status: 'active' | 'paused' | 'cancelled';
+ auto_invoice: boolean;
+ reminder_days_before: number;
+ created_at: string;
+ updated_at: string;
+ contact?: Pick<Contact, 'id' | 'name' | 'phone'>;
+}
+
+/** Booking lifecycle (migration 018). */
+export type AppointmentStatus =
+ | 'scheduled'
+ | 'confirmed'
+ | 'completed'
+ | 'cancelled'
+ | 'no_show';
+
+export interface Appointment {
+ id: string;
+ user_id: string;
+ contact_id: string;
+ conversation_id?: string | null;
+ title: string;
+ notes?: string | null;
+ location?: string | null;
+ starts_at: string;
+ ends_at?: string | null;
+ /** IANA zone the booking was made in; reminders render in it. */
+ timezone: string;
+ status: AppointmentStatus;
+ created_at: string;
+ updated_at: string;
+ contact?: Pick<Contact, 'id' | 'name' | 'phone'>;
+}
+
+export type ReminderStatus =
+ | 'pending'
+ | 'sent'
+ | 'failed'
+ | 'skipped'
+ | 'cancelled';
+
+export interface AppointmentReminder {
+ id: string;
+ appointment_id: string;
+ user_id: string;
+ send_at: string;
+ offset_minutes: number;
+ channel: 'text' | 'template';
+ message_text?: string | null;
+ template_name?: string | null;
+ template_language?: string | null;
+ status: ReminderStatus;
+ sent_at?: string | null;
+ error_message?: string | null;
+ created_at: string;
+}
+
+/** Agent-set ticket urgency (migration 017). */
+export type ConversationPriority = 'low' | 'normal' | 'high' | 'urgent';
 
 export interface Conversation {
  id: string;
@@ -77,6 +222,24 @@ export interface Conversation {
  last_message_text?: string;
  last_message_at?: string;
  unread_count: number;
+ /**
+  * Response and resolution clocks (migration 015). Written only via
+  * the helpers in lib/conversations/response-metrics.ts — see there
+  * for what "first" means in each case.
+  */
+ first_inbound_at?: string | null;
+ first_response_at?: string | null;
+ first_response_seconds?: number | null;
+ /** Non-null while a customer message is waiting on a reply. */
+ awaiting_reply_since?: string | null;
+ resolved_at?: string | null;
+ resolved_by?: string | null;
+ resolution_seconds?: number | null;
+ /** Ticket fields (migration 017). */
+ priority?: ConversationPriority;
+ category?: string | null;
+ resolution_note?: string | null;
+ last_away_sent_at?: string | null;
  created_at: string;
  updated_at: string;
  contact?: Contact;

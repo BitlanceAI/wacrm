@@ -14,6 +14,7 @@ import {
  rateLimitResponse,
  RATE_LIMITS,
 } from '@/lib/rate-limit'
+import { outboundPatch } from '@/lib/conversations/response-metrics'
 
 export async function POST(request: Request) {
  try {
@@ -275,13 +276,17 @@ export async function POST(request: Request) {
  )
  }
 
- // Update conversation
+ // Update conversation. outboundPatch stops the wait clock and, on
+ // the first reply after an inbound message, records the response
+ // time — see lib/conversations/response-metrics.ts.
+ const sentAtIso = new Date().toISOString()
  await supabase
  .from('conversations')
  .update({
  last_message_text: content_text || `[${message_type}]`,
- last_message_at: new Date().toISOString(),
- updated_at: new Date().toISOString(),
+ last_message_at: sentAtIso,
+ updated_at: sentAtIso,
+ ...outboundPatch(conversation, sentAtIso),
  })
  .eq('id', conversation_id)
 

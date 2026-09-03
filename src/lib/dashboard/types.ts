@@ -48,6 +48,32 @@ export interface ResponseTimeSummary {
  lastWeekAvg: number | null
 }
 
+/**
+ * Support-desk health, derived from the conversation response clocks
+ * added in migration 015. Distinct from ResponseTimeSummary, which
+ * charts historical first-response speed: this describes the queue as
+ * it stands right now, plus how long resolutions are taking.
+ */
+export interface SupportHealth {
+ /** Open/pending threads with an unanswered customer message. */
+ waitingCount: number
+ /** Longest current wait, in seconds. Null when nothing is waiting. */
+ oldestWaitSeconds: number | null
+ /** Waiting threads that have been unanswered for over four hours. */
+ breachedCount: number
+ /** Mean resolution time over the trailing window, in seconds. */
+ avgResolutionSeconds: number | null
+ /** Threads resolved inside the trailing window. */
+ resolvedCount: number
+ /** How many days the resolution figures cover. */
+ windowDays: number
+ /** Mean CSAT score (1-5) over the window; null with no responses. */
+ csatAverage: number | null
+ /** Percent of responses scoring 4 or 5; null with no responses. */
+ csatSatisfaction: number | null
+ csatResponses: number
+}
+
 export type ActivityKind =
  | 'message'
  | 'deal'
