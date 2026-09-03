@@ -197,9 +197,23 @@ export async function POST(request: Request) {
     })
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Send failed'
-    // Meta-side rejections come through as thrown errors with the
-    // upstream reason — surface them as 502 so callers can tell "my
-    // request was bad" (400) from "Meta refused" (502).
+    // Pair rate limit (#131056): WhatsApp allows ~1 message per 6
+    // seconds to the same person. A chatbot in a rapid exchange is the
+    // classic trigger — return 429 with a retry hint so callers back
+    // off (Meta prescribes exponential backoff, 4^attempt seconds).
+    if (message.includes('131056')) {
+      return NextResponse.json(
+        {
+          error:
+            'WhatsApp pair rate limit: at most ~1 message per 6 seconds to the same recipient. Back off and retry (suggested: 4^attempt seconds).',
+          code: 'PAIR_RATE_LIMIT',
+          retry_after_seconds: 6,
+        },
+        { status: 429, headers: { 'Retry-After': '6' } }
+      )
+    }
+    // Other Meta-side rejections surface as 502 so callers can tell
+    // "my request was bad" (400) from "Meta refused" (502).
     return NextResponse.json({ error: message }, { status: 502 })
   }
 }

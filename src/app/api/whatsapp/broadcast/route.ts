@@ -119,6 +119,9 @@ function friendlyMetaError(raw: string | null): string {
   if (raw.includes('132012') || raw.includes('132000')) {
     return `${raw} — the parameters sent don't match the template's variables on Meta. Sync your templates (Templates → Sync from Meta) so the stored copy matches Meta, then rebuild and resend the broadcast.`
   }
+  if (raw.includes('131056')) {
+    return `${raw} — WhatsApp allows ~1 message per 6 seconds to the same person (pair rate limit). This recipient got messages too fast; they'll be reachable again shortly — resend later rather than immediately.`
+  }
   if (raw.includes('132001')) {
     return `${raw} — Meta has no approved template with this name and language. Verify the template name/language, or sync templates from Meta.`
   }

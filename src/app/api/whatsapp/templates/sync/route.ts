@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { decrypt } from '@/lib/whatsapp/encryption'
+import { checkRateLimit, rateLimitResponse } from '@/lib/rate-limit'
 
 /**
  * Sync message templates from Meta → local message_templates table.
@@ -101,6 +102,20 @@ export async function POST() {
 
  if (authError || !user) {
  return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+ }
+
+ // Meta budgets management-endpoint calls per WABA per hour (200 for
+ // inactive WABAs, 5000 for active ones — shared across everything
+ // this app does to that WABA). Each sync spends up to PAGE_CAP
+ // requests, and the client triggers syncs from several surfaces
+ // (settings, wizard, staleness checks in every open tab), so cap the
+ // burn server-side rather than trusting per-browser localStorage.
+ const limit = checkRateLimit(`tpl-sync:${user.id}`, {
+ limit: 12,
+ windowMs: 60 * 60 * 1000,
+ })
+ if (!limit.success) {
+ return rateLimitResponse(limit)
  }
 
  // whatsapp_config holds waba_id + encrypted access_token.

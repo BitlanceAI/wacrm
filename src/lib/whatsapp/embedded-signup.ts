@@ -156,6 +156,9 @@ export async function launchEmbeddedSignup(opts: {
           override_default_response_type: true,
           extras: {
             setup: {},
+            // Embedded Signup v2 is deprecated Oct 15, 2026 — pin v4
+            // explicitly (matches the dashboard's launch tool).
+            version: 'v4',
             sessionInfoVersion: '3',
             ...(opts.coexistence
               ? { featureType: 'whatsapp_business_app_onboarding' }

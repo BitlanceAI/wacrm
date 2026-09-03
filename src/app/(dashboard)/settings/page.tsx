@@ -63,7 +63,10 @@ export default function SettingsPage() {
  </div>
 
  <Tabs value={tab} onValueChange={(v) => onChange(v as TabValue)}>
- <TabsList className="bg-background border border-border">
+ {/* Full-width with spacing: seven tabs hugging each other while
+ the rest of the row sits empty reads as congestion. flex-wrap +
+ h-auto keeps them usable on narrow screens instead of clipping. */}
+ <TabsList className="bg-background border border-border flex h-auto w-full flex-wrap justify-start gap-2 p-1.5">
  <TabsTrigger
  value="profile"
  className="data-active:bg-accent data-active:text-primary text-muted-foreground"

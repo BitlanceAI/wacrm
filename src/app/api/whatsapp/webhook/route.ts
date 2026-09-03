@@ -6,6 +6,16 @@ import { normalizePhone, phonesMatch } from '@/lib/whatsapp/phone-utils'
 import { verifyMetaWebhookSignature } from '@/lib/whatsapp/webhook-signature'
 import { runAutomationsForTrigger } from '@/lib/automations/engine'
 import { relayInboundToDeveloperWebhook } from '@/lib/developer/relay'
+import {
+ handleSmbMessageEchoes,
+ handleSmbStateSync,
+ handleHistory,
+ handleAccountUpdate,
+ type SmbEchoValue,
+ type SmbStateSyncValue,
+ type HistoryValue,
+ type AccountUpdateValue,
+} from '@/lib/whatsapp/coexistence'
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { detectOptKeyword } from '@/lib/whatsapp/opt-out'
 import { inboundPatch } from '@/lib/conversations/response-metrics'
@@ -243,6 +253,26 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
  for (const entry of body.entry) {
  for (const change of entry.changes) {
  const value = change.value
+
+ // Coexistence + account lifecycle fields carry different value
+ // shapes than the messages field — route them to their own
+ // handlers and move on.
+ if (change.field === 'smb_message_echoes') {
+ await handleSmbMessageEchoes(value as unknown as SmbEchoValue)
+ continue
+ }
+ if (change.field === 'smb_app_state_sync') {
+ await handleSmbStateSync(value as unknown as SmbStateSyncValue)
+ continue
+ }
+ if (change.field === 'history') {
+ await handleHistory(value as unknown as HistoryValue)
+ continue
+ }
+ if (change.field === 'account_update') {
+ await handleAccountUpdate(entry.id, value as unknown as AccountUpdateValue)
+ continue
+ }
 
  // Handle status updates
  if (value.statuses) {

@@ -3,6 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { encrypt } from '@/lib/whatsapp/encryption'
 import {
   exchangeEmbeddedSignupCode,
+  initiateSmbAppDataSync,
   registerPhoneNumber,
   subscribeWabaToApp,
   verifyPhoneNumber,
@@ -122,6 +123,7 @@ export async function POST(request: Request) {
     // whole onboarding.
     const pin = String(Math.floor(100000 + Math.random() * 900000))
     let registered = false
+    let coexistence = false
     let registerError: string | null = null
     try {
       await registerPhoneNumber({
@@ -138,6 +140,7 @@ export async function POST(request: Request) {
       // done. That refusal is success, not failure.
       if (/SMB business/i.test(message)) {
         registered = true
+        coexistence = true
         console.log(
           '[embedded-signup] register skipped — coexistence (SMB) number, already registered via the Business App flow'
         )
@@ -229,10 +232,42 @@ export async function POST(request: Request) {
       )
     }
 
+    // Coexistence numbers: Meta REQUIRES contacts + history sync to be
+    // initiated within 24 hours of onboarding, or it offboards the
+    // customer and they must redo the whole flow. Each can run exactly
+    // once, so fire both now — results stream back as
+    // smb_app_state_sync / history webhooks that the webhook route
+    // imports into contacts and conversations.
+    let dataSyncStarted = false
+    if (coexistence) {
+      for (const syncType of ['smb_app_state_sync', 'history'] as const) {
+        try {
+          const { requestId } = await initiateSmbAppDataSync({
+            phoneNumberId: phone_number_id,
+            accessToken,
+            syncType,
+          })
+          dataSyncStarted = true
+          console.log(
+            `[embedded-signup] ${syncType} sync initiated, request_id=${requestId}`
+          )
+        } catch (err) {
+          // "already initiated" on a re-run is fine; anything else is
+          // logged loudly since the 24h offboarding clock is running.
+          console.error(
+            `[embedded-signup] ${syncType} sync initiation failed:`,
+            err instanceof Error ? err.message : err
+          )
+        }
+      }
+    }
+
     return NextResponse.json({
       success: true,
       phone_info: phoneInfo,
       registered,
+      coexistence,
+      data_sync_started: dataSyncStarted,
       register_error: registerError,
       webhook_subscribed: webhookSubscribed,
       webhook_subscribe_error: webhookSubscribeError,

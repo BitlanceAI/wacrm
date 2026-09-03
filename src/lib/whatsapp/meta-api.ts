@@ -39,6 +39,44 @@ async function throwMetaError(response: Response, fallback: string): Promise<nev
 }
 
 // ============================================================
+// Coexistence data sync
+// ============================================================
+
+export interface InitiateSmbAppDataSyncArgs {
+ phoneNumberId: string
+ accessToken: string
+ /** 'smb_app_state_sync' = contacts; 'history' = chat history. */
+ syncType: 'smb_app_state_sync' | 'history'
+}
+
+/**
+ * Kick off WhatsApp Business App data synchronization for a
+ * coexistence-onboarded number. MUST be called within 24 hours of
+ * onboarding or Meta offboards the customer and they have to redo
+ * Embedded Signup. Each sync type can be initiated exactly once per
+ * onboarding; results arrive asynchronously as webhooks
+ * (smb_app_state_sync / history fields).
+ */
+export async function initiateSmbAppDataSync(
+ args: InitiateSmbAppDataSyncArgs
+): Promise<{ requestId: string | null }> {
+ const { phoneNumberId, accessToken, syncType } = args
+ const response = await fetch(`${META_API_BASE}/${phoneNumberId}/smb_app_data`, {
+ method: 'POST',
+ headers: {
+ 'Content-Type': 'application/json',
+ Authorization: `Bearer ${accessToken}`,
+ },
+ body: JSON.stringify({ messaging_product: 'whatsapp', sync_type: syncType }),
+ })
+ if (!response.ok) {
+ await throwMetaError(response, `Meta API error: ${response.status}`)
+ }
+ const data = (await response.json()) as { request_id?: string }
+ return { requestId: data.request_id ?? null }
+}
+
+// ============================================================
 // Template creation
 // ============================================================
 
