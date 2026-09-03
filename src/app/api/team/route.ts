@@ -4,6 +4,7 @@ import { createClient } from '@/lib/supabase/server'
 import { getAdminClient } from '@/lib/supabase/admin'
 import { resolveTenantUserId } from '@/lib/team/tenant'
 import { checkRateLimit, rateLimitResponse } from '@/lib/rate-limit'
+import { resolveSeatLimit } from '@/lib/billing/platform'
 
 /**
  * Team management (Path-B multi-user). Owner-only:
@@ -13,12 +14,10 @@ import { checkRateLimit, rateLimitResponse } from '@/lib/rate-limit'
  *   DELETE — remove a member: membership row + the invite-created
  *            auth account
  *
- * Seat limit is a flat constant until plan assignment exists —
- * plan-based enforcement (1/5/unlimited) plugs in here when a
- * user↔plan mapping is built.
+ * Seat limit comes from the owner's paid plan (plans.max_seats via
+ * platform_subscriptions — see resolveSeatLimit). Accounts with no
+ * subscription keep the pre-billing flat cap of 25.
  */
-
-const MAX_SEATS = 25
 
 async function requireOwner() {
   const supabase = await createClient()
@@ -67,7 +66,9 @@ export async function GET() {
       ...m,
       display_name: nameById.get(m.member_user_id) ?? m.invited_email ?? 'Member',
     })),
-    max_seats: MAX_SEATS,
+    max_seats: await resolveSeatLimit(getAdminClient(), ctx.user.id).then((n) =>
+      Number.isFinite(n) ? n : null
+    ),
   })
 }
 
@@ -95,12 +96,18 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'A valid email is required' }, { status: 400 })
   }
 
+  const seatLimit = await resolveSeatLimit(getAdminClient(), ctx.user.id)
   const { count } = await ctx.supabase
     .from('team_members')
     .select('id', { count: 'exact', head: true })
-  if ((count ?? 0) >= MAX_SEATS) {
+  if ((count ?? 0) >= seatLimit) {
     return NextResponse.json(
-      { error: `Team is at the ${MAX_SEATS}-seat limit.` },
+      {
+        error:
+          seatLimit === 0
+            ? 'Your plan is single-user. Upgrade in Settings → Billing to invite team members.'
+            : `Your plan allows ${seatLimit} team member${seatLimit === 1 ? '' : 's'}. Upgrade in Settings → Billing for more seats.`,
+      },
       { status: 400 }
     )
   }

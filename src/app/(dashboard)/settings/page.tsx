@@ -14,6 +14,7 @@ import { SessionsCard } from '@/components/settings/sessions-card';
 import { CannedReplyManager } from '@/components/settings/canned-reply-manager';
 import { SupportDeskPanel } from '@/components/settings/support-desk-panel';
 import { BillingPanel } from '@/components/settings/billing-panel';
+import { PlanSubscriptionCard } from '@/components/settings/plan-subscription-card';
 
 const TAB_VALUES = [
  'profile',
@@ -157,7 +158,8 @@ export default function SettingsPage() {
  <SupportDeskPanel />
  </TabsContent>
 
- <TabsContent value="billing">
+ <TabsContent value="billing" className="space-y-4">
+ <PlanSubscriptionCard />
  <BillingPanel />
  </TabsContent>
  </Tabs>

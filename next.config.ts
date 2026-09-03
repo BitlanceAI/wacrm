@@ -26,7 +26,10 @@ const SECURITY_HEADERS = [
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
   {
     key: "Permissions-Policy",
-    value: "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+    // payment: Razorpay Checkout may use the Payment Request API for
+    // UPI/Google Pay flows from its own frames.
+    value:
+      'camera=(), microphone=(), geolocation=(), usb=(), payment=(self "https://api.razorpay.com" "https://checkout.razorpay.com")',
   },
   {
     key: "Content-Security-Policy-Report-Only",
@@ -37,7 +40,9 @@ const SECURITY_HEADERS = [
       // Nonce-based CSP is a later project.
       // connect.facebook.net: the Facebook JS SDK powering Embedded
       // Signup (Settings → WhatsApp Config → Connect via Facebook).
-      "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://connect.facebook.net",
+      // checkout.razorpay.com: Razorpay Checkout for plan payments
+      // (Settings → Billing).
+      "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://connect.facebook.net https://checkout.razorpay.com",
       // Tailwind + inline style attributes on lots of components.
       "style-src 'self' 'unsafe-inline'",
       // Supabase public-bucket avatars, contact avatars (arbitrary
@@ -48,10 +53,10 @@ const SECURITY_HEADERS = [
       // Supabase REST + realtime (WSS). Facebook hosts are for the JS
       // SDK's own telemetry/XHR during Embedded Signup — the Meta
       // *Graph API* calls all happen server-side and stay excluded.
-      "connect-src 'self' https://*.supabase.co wss://*.supabase.co https://connect.facebook.net https://www.facebook.com https://web.facebook.com https://graph.facebook.com",
+      "connect-src 'self' https://*.supabase.co wss://*.supabase.co https://connect.facebook.net https://www.facebook.com https://web.facebook.com https://graph.facebook.com https://api.razorpay.com https://lumberjack.razorpay.com",
       // The FB SDK opens facebook.com in a popup and can fall back to
       // an iframe; without frame-src the fallback path gets blocked.
-      "frame-src 'self' https://www.facebook.com https://web.facebook.com",
+      "frame-src 'self' https://www.facebook.com https://web.facebook.com https://api.razorpay.com https://checkout.razorpay.com",
       "frame-ancestors 'none'",
       "base-uri 'self'",
       "form-action 'self'",
