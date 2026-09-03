@@ -39,6 +39,39 @@ async function throwMetaError(response: Response, fallback: string): Promise<nev
 }
 
 // ============================================================
+// Billing / funding status
+// ============================================================
+
+/**
+ * Does the WABA have a payment method attached?
+ *
+ * Meta exposes this as `primary_funding_id` on the WABA — present when
+ * a card/credit line is configured, absent otherwise. A WABA without
+ * funding can only use the free tier; paid sends fail with #131042,
+ * which reads like a platform bug unless surfaced at onboarding.
+ *
+ * Returns null when the answer can't be determined (API error, field
+ * unavailable for this account type) — callers should stay quiet on
+ * null rather than warn on a guess.
+ */
+export async function wabaHasPaymentMethod(args: {
+ wabaId: string
+ accessToken: string
+}): Promise<boolean | null> {
+ try {
+ const response = await fetch(
+ `${META_API_BASE}/${args.wabaId}?fields=primary_funding_id`,
+ { headers: { Authorization: `Bearer ${args.accessToken}` } }
+ )
+ if (!response.ok) return null
+ const data = (await response.json()) as { primary_funding_id?: string }
+ return Boolean(data.primary_funding_id)
+ } catch {
+ return null
+ }
+}
+
+// ============================================================
 // Coexistence data sync
 // ============================================================
 

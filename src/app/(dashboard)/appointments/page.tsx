@@ -195,11 +195,20 @@ export default function AppointmentsPage() {
         <div className="space-y-5">
             <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
-                    <h1 className="text-2xl font-bold text-foreground">Appointments</h1>
+                    <div className="flex items-center gap-2">
+                        <h1 className="text-2xl font-bold text-foreground">Appointments</h1>
+                        <span
+                            className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-500"
+                            title="Bookings work today. Automatic reminder delivery requires a frequent scheduler and will be activated soon."
+                        >
+                            Reminders: Upcoming
+                        </span>
+                    </div>
                     <p className="mt-1 text-sm text-muted-foreground">
-                        Bookings with automatic WhatsApp reminders. Free-text reminders only
-                        reach customers inside the 24-hour service window — for bookings
-                        further out, use an approved template.
+                        Bookings with WhatsApp reminders. Reminder schedules are saved with
+                        each booking — automatic delivery is coming soon. Free-text
+                        reminders only reach customers inside the 24-hour service window —
+                        for bookings further out, use an approved template.
                     </p>
                 </div>
                 <div className="flex items-center gap-2">
@@ -382,7 +391,12 @@ export default function AppointmentsPage() {
                         </div>
 
                         <div className="space-y-1.5">
-                            <Label className="text-xs text-muted-foreground">Reminders</Label>
+                            <Label className="text-xs text-muted-foreground">
+                                Reminders{' '}
+                                <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-1.5 py-px text-[9px] font-medium text-amber-500">
+                                    delivery upcoming
+                                </span>
+                            </Label>
                             <div className="flex flex-wrap gap-2">
                                 {REMINDER_PRESETS.map((preset) => (
                                     <button

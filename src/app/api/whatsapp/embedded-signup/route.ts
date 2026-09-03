@@ -7,6 +7,7 @@ import {
   registerPhoneNumber,
   subscribeWabaToApp,
   verifyPhoneNumber,
+  wabaHasPaymentMethod,
 } from '@/lib/whatsapp/meta-api'
 import { checkRateLimit, rateLimitResponse } from '@/lib/rate-limit'
 
@@ -262,11 +263,20 @@ export async function POST(request: Request) {
       }
     }
 
+    // Funding check: a WABA without a payment method silently caps at
+    // Meta's free tier, then every paid send fails with #131042 — which
+    // looks like a platform bug unless the user was told at onboarding.
+    const paymentMethodConfigured = await wabaHasPaymentMethod({
+      wabaId: waba_id,
+      accessToken,
+    })
+
     return NextResponse.json({
       success: true,
       phone_info: phoneInfo,
       registered,
       coexistence,
+      payment_method_configured: paymentMethodConfigured,
       data_sync_started: dataSyncStarted,
       register_error: registerError,
       webhook_subscribed: webhookSubscribed,

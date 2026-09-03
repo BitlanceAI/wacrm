@@ -201,6 +201,19 @@ export async function POST(request: Request) {
     // seconds to the same person. A chatbot in a rapid exchange is the
     // classic trigger — return 429 with a retry hint so callers back
     // off (Meta prescribes exponential backoff, 4^attempt seconds).
+    // Payment/billing rejection (#131042): the tenant's WABA has no
+    // funding for paid sends. 402 tells API consumers precisely whose
+    // problem it is (the account's billing, not the request).
+    if (message.includes('131042')) {
+      return NextResponse.json(
+        {
+          error:
+            'The WhatsApp Business Account has no payment method or has a billing issue — Meta refused the send. Add a payment method in Meta Billing Hub (business.facebook.com/billing_hub).',
+          code: 'PAYMENT_METHOD_REQUIRED',
+        },
+        { status: 402 }
+      )
+    }
     if (message.includes('131056')) {
       return NextResponse.json(
         {

@@ -119,6 +119,9 @@ function friendlyMetaError(raw: string | null): string {
   if (raw.includes('132012') || raw.includes('132000')) {
     return `${raw} — the parameters sent don't match the template's variables on Meta. Sync your templates (Templates → Sync from Meta) so the stored copy matches Meta, then rebuild and resend the broadcast.`
   }
+  if (raw.includes('131042')) {
+    return `${raw} — the WhatsApp Business Account has no payment method (or a billing problem), so Meta refuses paid sends beyond the free tier. Add a payment method in Meta's Billing Hub (business.facebook.com/billing_hub), then resend.`
+  }
   if (raw.includes('131056')) {
     return `${raw} — WhatsApp allows ~1 message per 6 seconds to the same person (pair rate limit). This recipient got messages too fast; they'll be reachable again shortly — resend later rather than immediately.`
   }

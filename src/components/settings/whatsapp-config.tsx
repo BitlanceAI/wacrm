@@ -48,6 +48,9 @@ export function WhatsAppConfig() {
  const [config, setConfig] = useState<WhatsAppConfigType | null>(null);
  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('unknown');
  const [resetReason, setResetReason] = useState<ResetReason>(null);
+ // Explicit tri-state from GET /api/whatsapp/config: false shows the
+ // persistent no-payment-method banner; null (unknown) shows nothing.
+ const [paymentConfigured, setPaymentConfigured] = useState<boolean | null>(null);
  const [statusMessage, setStatusMessage] = useState<string>('');
 
  const [phoneNumberId, setPhoneNumberId] = useState('');
@@ -101,6 +104,11 @@ export function WhatsAppConfig() {
  setConnectionStatus('connected');
  setResetReason(null);
  setStatusMessage('');
+ setPaymentConfigured(
+ typeof payload.payment_method_configured === 'boolean'
+ ? payload.payment_method_configured
+ : null,
+ );
  } else {
  setConnectionStatus('disconnected');
  setResetReason(payload.needs_reset ? 'token_corrupted' : payload.reason === 'meta_api_error' ? 'meta_api_error' : null);
@@ -182,6 +190,15 @@ export function WhatsAppConfig() {
  toast.warning('Connected, but incoming messages may not arrive', {
  description: data.webhook_subscribe_error ?? undefined,
  duration: 10000,
+ });
+ }
+ // Explicitly false only — null means "couldn't determine", and
+ // warning on a guess trains users to ignore the warning.
+ if (data.payment_method_configured === false) {
+ toast.warning('Add a payment method to keep messaging', {
+ description:
+ 'This WhatsApp Business Account has no payment method. Messaging stops at Meta’s free tier and paid sends will fail. Add one at business.facebook.com/billing_hub.',
+ duration: 15000,
  });
  }
 
@@ -441,6 +458,35 @@ export function WhatsAppConfig() {
  'Configure your Meta API credentials below to connect your WhatsApp Business account.'}
  </AlertDescription>
  </Alert>
+
+ {/* Persistent funding warning: a WABA without a payment method
+ stops at Meta's free tier and then every paid send fails with
+ #131042. Shown only on an explicit "no" from Meta — never on
+ an unknown. */}
+ {connectionStatus === 'connected' && paymentConfigured === false && (
+ <Alert className="border-amber-500/30 bg-amber-500/10">
+ <div className="flex items-center gap-2">
+ <AlertTriangle className="size-4 text-amber-500" />
+ <AlertTitle className="mb-0 text-amber-500">
+ No payment method on this WhatsApp account
+ </AlertTitle>
+ </div>
+ <AlertDescription className="text-muted-foreground">
+ Messaging is limited to Meta&apos;s free tier and paid sends
+ (marketing/utility templates) will fail until a payment method
+ is added in{' '}
+ <a
+ href="https://business.facebook.com/billing_hub"
+ target="_blank"
+ rel="noopener noreferrer"
+ className="text-amber-500 underline"
+ >
+ Meta&apos;s Billing Hub
+ </a>
+ .
+ </AlertDescription>
+ </Alert>
+ )}
 
  {/* Embedded Signup — the guided path. One click, Meta's popup
  walks the user through creating/sharing a WABA, and the server

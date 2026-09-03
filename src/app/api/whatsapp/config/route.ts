@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { verifyPhoneNumber, subscribeWabaToApp } from '@/lib/whatsapp/meta-api'
+import { wabaHasPaymentMethod, verifyPhoneNumber, subscribeWabaToApp } from '@/lib/whatsapp/meta-api'
 import { encrypt, decrypt } from '@/lib/whatsapp/encryption'
 
 /**
@@ -31,7 +31,7 @@ export async function GET() {
 
  const { data: config, error: configError } = await supabase
  .from('whatsapp_config')
- .select('phone_number_id, access_token, status')
+ .select('phone_number_id, waba_id, access_token, status')
  .eq('user_id', user.id)
  .maybeSingle()
 
@@ -79,7 +79,17 @@ export async function GET() {
  phoneNumberId: config.phone_number_id,
  accessToken,
  })
- return NextResponse.json({ connected: true, phone_info: phoneInfo })
+ // Funding status for the persistent "no payment method" badge.
+ // null = unknown (API didn't answer) — the UI stays quiet on null
+ // so the badge never shows on a guess.
+ const paymentMethodConfigured = config.waba_id
+ ? await wabaHasPaymentMethod({ wabaId: config.waba_id, accessToken })
+ : null
+ return NextResponse.json({
+ connected: true,
+ phone_info: phoneInfo,
+ payment_method_configured: paymentMethodConfigured,
+ })
  } catch (err) {
  const message = err instanceof Error ? err.message : 'Unknown Meta API error'
  console.error('[whatsapp/config GET] Meta API verification failed:', message)

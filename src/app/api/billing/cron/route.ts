@@ -31,18 +31,36 @@ import {
 
 export const maxDuration = 60
 
-export async function GET(request: Request) {
-  const expected = process.env.AUTOMATION_CRON_SECRET
-  if (!expected) {
-    return NextResponse.json({ error: 'cron not configured' }, { status: 503 })
-  }
-  const supplied = request.headers.get('x-cron-secret') ?? ''
+function secretsMatch(supplied: string, expected: string | undefined): boolean {
+  if (!expected || !supplied) return false
   const suppliedBuf = Buffer.from(supplied)
   const expectedBuf = Buffer.from(expected)
-  if (
-    suppliedBuf.length !== expectedBuf.length ||
-    !timingSafeEqual(suppliedBuf, expectedBuf)
-  ) {
+  return (
+    suppliedBuf.length === expectedBuf.length &&
+    timingSafeEqual(suppliedBuf, expectedBuf)
+  )
+}
+
+export async function GET(request: Request) {
+  if (!process.env.AUTOMATION_CRON_SECRET && !process.env.CRON_SECRET) {
+    return NextResponse.json({ error: 'cron not configured' }, { status: 503 })
+  }
+  // Two auth styles, one route:
+  //  - external schedulers send `x-cron-secret: AUTOMATION_CRON_SECRET`
+  //    (the convention shared with the flows/appointments sweeps)
+  //  - Vercel Cron can ONLY send `Authorization: Bearer ${CRON_SECRET}`
+  //    (attached automatically when a CRON_SECRET env var exists) —
+  //    custom headers are not configurable there.
+  const headerSecret = request.headers.get('x-cron-secret') ?? ''
+  const bearer = (request.headers.get('authorization') ?? '').replace(
+    /^Bearer\s+/i,
+    ''
+  )
+  const authorized =
+    secretsMatch(headerSecret, process.env.AUTOMATION_CRON_SECRET) ||
+    secretsMatch(bearer, process.env.CRON_SECRET) ||
+    secretsMatch(bearer, process.env.AUTOMATION_CRON_SECRET)
+  if (!authorized) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
