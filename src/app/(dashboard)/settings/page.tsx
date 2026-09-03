@@ -2,10 +2,11 @@
 
 import { useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Settings, Tag, User, Zap, Headphones, IndianRupee } from 'lucide-react';
+import { Settings, Tag, User, Zap, Headphones, IndianRupee, Code2 } from 'lucide-react';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { WhatsAppConfig } from '@/components/settings/whatsapp-config';
 import { TagManager } from '@/components/settings/tag-manager';
+import { DeveloperPanel } from '@/components/settings/developer-panel';
 import { ProfileForm } from '@/components/settings/profile-form';
 import { PasswordForm } from '@/components/settings/password-form';
 import { SessionsCard } from '@/components/settings/sessions-card';
@@ -17,6 +18,7 @@ const TAB_VALUES = [
  'profile',
  'whatsapp',
  'tags',
+ 'developers',
  'quick-replies',
  'support',
  'billing',
@@ -84,6 +86,13 @@ export default function SettingsPage() {
  Tags
  </TabsTrigger>
  <TabsTrigger
+ value="developers"
+ className="data-active:bg-accent data-active:text-primary text-muted-foreground"
+ >
+ <Code2 className="size-4" />
+ Developers
+ </TabsTrigger>
+ <TabsTrigger
  value="quick-replies"
  className="data-active:bg-accent data-active:text-primary text-muted-foreground"
  >
@@ -118,6 +127,10 @@ export default function SettingsPage() {
 
  <TabsContent value="tags">
  <TagManager />
+ </TabsContent>
+
+ <TabsContent value="developers">
+ <DeveloperPanel />
  </TabsContent>
 
  <TabsContent value="quick-replies">

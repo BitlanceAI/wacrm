@@ -5,6 +5,7 @@ import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api'
 import { normalizePhone, phonesMatch } from '@/lib/whatsapp/phone-utils'
 import { verifyMetaWebhookSignature } from '@/lib/whatsapp/webhook-signature'
 import { runAutomationsForTrigger } from '@/lib/automations/engine'
+import { relayInboundToDeveloperWebhook } from '@/lib/developer/relay'
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { detectOptKeyword } from '@/lib/whatsapp/opt-out'
 import { inboundPatch } from '@/lib/conversations/response-metrics'
@@ -890,6 +891,26 @@ async function processMessage(
  if (convError) {
  console.error('Error updating conversation:', convError)
  }
+
+ // Relay the inbound message to the user's developer webhook (if
+ // configured) so external chatbots can react. Best-effort with its
+ // own error handling — a dead endpoint never blocks the inbox.
+ await relayInboundToDeveloperWebhook(userId, {
+ contact: {
+ id: contactRecord.id,
+ phone: contactRecord.phone,
+ name: contactRecord.name ?? null,
+ },
+ conversation_id: conversation.id,
+ message: {
+ whatsapp_message_id: message.id,
+ type: message.type,
+ text: contentText ?? null,
+ media_url: mediaUrl ?? null,
+ interactive_reply_id: interactiveReplyId ?? null,
+ timestamp: new Date(parseInt(message.timestamp) * 1000).toISOString(),
+ },
+ })
 
  // If this contact was a recent broadcast recipient, flag the reply
  // so the broadcast's `replied_count` advances (via the aggregate

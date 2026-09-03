@@ -131,8 +131,20 @@ export async function POST(request: Request) {
       })
       registered = true
     } catch (err) {
-      registerError = err instanceof Error ? err.message : 'Unknown Meta error'
-      console.warn('[embedded-signup] register failed:', registerError)
+      const message = err instanceof Error ? err.message : 'Unknown Meta error'
+      // Coexistence numbers (onboarded from the WhatsApp Business App
+      // via QR) are registered by the app-side flow itself — Meta
+      // refuses /register for them precisely because it's already
+      // done. That refusal is success, not failure.
+      if (/SMB business/i.test(message)) {
+        registered = true
+        console.log(
+          '[embedded-signup] register skipped — coexistence (SMB) number, already registered via the Business App flow'
+        )
+      } else {
+        registerError = message
+        console.warn('[embedded-signup] register failed:', registerError)
+      }
     }
 
     // 3) Webhooks for the new WABA.

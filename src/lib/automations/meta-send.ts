@@ -34,6 +34,8 @@ interface SendTemplateArgs {
  templateName: string
  language?: string
  params?: string[]
+ /** Header component content (media URL / header-variable value). */
+ header?: import('@/lib/whatsapp/meta-api').TemplateHeaderParam
 }
 
 export async function engineSendText(args: SendTextArgs): Promise<{ whatsapp_message_id: string }> {
@@ -96,6 +98,7 @@ async function sendViaMeta(input: SendInput): Promise<{ whatsapp_message_id: str
  templateName: input.templateName,
  language: input.language,
  params: input.params,
+ header: input.header,
  })
  return r.messageId
  }
